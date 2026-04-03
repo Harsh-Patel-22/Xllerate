@@ -4,6 +4,20 @@ using Xllerate.Data;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddHttpClient("hdfs", client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["Hdfs:BaseUrl"]!);
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+builder.Services.AddHttpClient("spark", client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["Spark:FlaskTriggerUrl"]!);
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")
