@@ -1,8 +1,9 @@
+using Microsoft.AspNetCore.Identity;
 using Xllerate.Models.Interfaces;
 
 namespace Xllerate.Models;
 
-public class User : ITimestamped
+public class User : IdentityUser<Guid>, ITimestamped
 {
     public Guid Id { get; set; }
     public required string Email { get; set; }

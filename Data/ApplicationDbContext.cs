@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Options;
@@ -7,8 +9,9 @@ using Xllerate.Models.Interfaces;
 
 namespace Xllerate.Data;
 
-public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : DbContext(options) {
-    public DbSet<User> Users => Set<User>();
+public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+ : IdentityDbContext<User, IdentityRole<Guid>, Guid>(options) {
+ public DbSet<User> Users => Set<User>();
     public DbSet<Resume> Resumes => Set<Resume>();
     public DbSet<Skill> Skills => Set<Skill>();
     public DbSet<UserSkill> UserSkills => Set<UserSkill>();
