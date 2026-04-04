@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Xllerate.Models;
@@ -71,6 +72,26 @@ public class AuthController(UserManager<User> _userManager, SignInManager<User> 
         return Ok(new AuthResponse
         {
             Token = token,
+            UserId = user.Id,
+            FullName = user.FullName,
+            Email = user.Email!,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(60)
+        });
+    }
+    
+    [Authorize]
+    [HttpGet("me")]
+    public async Task<IActionResult> Me()
+    {
+        var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (userId is null) return Unauthorized();
+
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user is null) return Unauthorized();
+
+        return Ok(new AuthResponse
+        {
+            Token = "",   // not re-issued here — client already has it
             UserId = user.Id,
             FullName = user.FullName,
             Email = user.Email!,
