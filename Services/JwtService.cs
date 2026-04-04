@@ -28,7 +28,7 @@ public class JwtService
         };
 
         var key = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(jwtSettings["Secret"]!));
+            Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]!));
 
         var token = new JwtSecurityToken(
             issuer: jwtSettings["Issuer"],

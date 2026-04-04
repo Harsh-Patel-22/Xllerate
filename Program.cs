@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Xllerate.Data;
 using Xllerate.Models;
+using Xllerate.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -32,7 +33,7 @@ builder.Services.AddIdentity<User, IdentityRole<Guid>>(options =>
 
 // ── JWT ───────────────────────────────────────────────────────────────────────
 var jwtSettings = builder.Configuration.GetSection("JwtSettings");
-var secret = jwtSettings["Secret"]!;
+var secret = jwtSettings["SecretKey"]!;
 
 builder.Services.AddAuthentication(options =>
     {
@@ -69,7 +70,10 @@ builder.Services.AddHttpClient("spark", client =>
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 
-
+builder.Services.AddScoped<JwtService>();
+builder.Services.AddScoped<ResumeProcessingService>();
+builder.Services.AddScoped<ResumeUploadService>();
+builder.Services.AddScoped<SparkJobService>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")
