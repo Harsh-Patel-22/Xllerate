@@ -24,6 +24,8 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<Roadmap> Roadmaps => Set<Roadmap>();
     public DbSet<RoadmapItem> RoadmapItems => Set<RoadmapItem>();
     public DbSet<MarketTrend> MarketTrends => Set<MarketTrend>();
+    
+    public DbSet<SparkSkillStaging> SparkSkillStaging => Set<SparkSkillStaging>();
 
     // ── Auto-set UpdatedAt on every SaveChanges ───────────────────────────────
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
@@ -110,6 +112,36 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
 
          e.HasIndex(r => r.UserId);
          e.HasIndex(r => new { r.UserId, r.IsActive });
+        });
+        
+        mb.Entity<SparkSkillStaging>(e =>
+        {
+         e.HasKey(s => s.Id);
+
+         e.Property(s => s.Id)
+          .HasDefaultValueSql("NEWID()");
+
+         e.Property(s => s.ResumeId)
+          .HasMaxLength(64)
+          .IsRequired();
+
+         e.Property(s => s.SkillName)
+          .HasMaxLength(128)
+          .IsRequired();
+
+         e.Property(s => s.NormalizedName)
+          .HasMaxLength(128)
+          .IsRequired();
+
+         e.Property(s => s.Source)
+          .HasMaxLength(32)
+          .IsRequired();
+
+         e.Property(s => s.Confidence)
+          .HasColumnType("decimal(5,4)");
+
+         // Index for the polling query in GetStatus
+         e.HasIndex(s => new { s.ResumeId, s.IsConsumed });
         });
 
         // ── Skill ─────────────────────────────────────────────────────────────
