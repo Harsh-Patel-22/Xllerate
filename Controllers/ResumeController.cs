@@ -153,6 +153,83 @@ public class ResumeController(
             UploadedAt = resume.UploadedAt
         });
     }
+    
+    [HttpGet("{resumeId:guid}/debug")]
+    public async Task<IActionResult> Debug(Guid resumeId)
+    {
+        var userId = GetUserId();
+        if (userId == Guid.Empty) return Unauthorized();
+
+        var resume = await db.Resumes
+            .FirstOrDefaultAsync(r => r.Id == resumeId && r.UserId == userId);
+
+        if (resume is null)
+            return NotFound(new { message = "Resume not found." });
+
+        // Raw staging rows — what Spark wrote
+        var stagingRows = await db.SparkSkillStaging
+            .Where(s => s.ResumeId == resumeId.ToString())
+            .OrderBy(s => s.ProcessedAt)
+            .Select(s => new
+            {
+                s.SkillName,
+                s.NormalizedName,
+                s.Source,
+                s.Confidence,
+                s.IsConsumed,
+                s.ProcessedAt
+            })
+            .ToListAsync();
+
+        // Normalized skills — what ended up in UserSkills after consumption
+        var userSkills = await db.UserSkills
+            .Where(us => us.UserId == userId)
+            .Include(us => us.Skill)
+            .Include(us => us.Sources)
+            .Select(us => new
+            {
+                SkillName = us.Skill.Name,
+                NormalizedName = us.Skill.NormalizedName,
+                Category = us.Skill.Category,
+                us.ConfidenceScore,
+                VerificationStatus = us.VerificationStatus.ToString(),
+                Sources = us.Sources.Select(src => new
+                {
+                    SourceType = src.SourceType.ToString(),
+                    src.Weight,
+                    src.Evidence,
+                    src.CapturedAt
+                }).ToList()
+            })
+            .ToListAsync();
+
+        // Parsed resume metadata
+        var parsedData = new
+        {
+            resume.Id,
+            resume.OriginalFileName,
+            resume.StoragePath,
+            resume.UploadedAt,
+            resume.ParsedAt,
+            Status = resume.ParsedAt is null ? "processing" : "complete",
+            ParsedContent = resume.ParsedData
+        };
+
+        return Ok(new
+        {
+            Resume = parsedData,
+            SparkStagingRows = stagingRows,
+            NormalizedSkills = userSkills,
+            Summary = new
+            {
+                TotalSkillsFromSpark = stagingRows.Count,
+                SkillsFromNlp = stagingRows.Count(s => s.Source == "nlp"),
+                SkillsFromGemini = stagingRows.Count(s => s.Source == "gemini_backup"),
+                ConsumedRows = stagingRows.Count(s => s.IsConsumed),
+                TotalNormalizedSkills = userSkills.Count
+            }
+        });
+    }
 
     // ── Helper ────────────────────────────────────────────────────────────────
     private Guid GetUserId()
