@@ -73,6 +73,7 @@ builder.Services.AddHttpClient("spark", client =>
 builder.Services.AddScoped<JwtService>();
 builder.Services.AddScoped<ResumeProcessingService>();
 builder.Services.AddScoped<ResumeUploadService>();
+builder.Services.AddScoped<HdfsService>();
 builder.Services.AddScoped<SparkJobService>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
