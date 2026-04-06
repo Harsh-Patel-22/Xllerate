@@ -267,4 +267,44 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
             .Where(s => !string.IsNullOrWhiteSpace(s))
             .ToList();
     }
+    
+    // ResumeProcessingService.cs — add static helper
+    private static string? ExtractUsername(string? url, string domain)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return null;
+
+        // Handles:
+        // github.com/username
+        // https://github.com/username
+        // https://www.github.com/username/
+        // leetcode.com/u/username  (newer LeetCode URL format)
+        try
+        {
+            // Normalize — add scheme if missing so Uri can parse it
+            if (!url.StartsWith("http"))
+                url = "https://" + url;
+
+            var uri = new Uri(url);
+            var segments = uri.AbsolutePath
+                .Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+            if (!uri.Host.Contains(domain, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            if (!segments.Any())
+                return null;
+
+            // LeetCode uses /u/username format
+            if (domain == "leetcode" && segments.Length >= 2
+                                     && segments[0] == "u")
+                return segments[1];
+
+            return segments[0];
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }
