@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using Xllerate.Data;
 using Xllerate.Models;
 using Xllerate.Services;
+using Xllerate.Services.Enrichment;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -69,6 +70,33 @@ builder.Services.AddHttpClient("spark", client =>
         builder.Configuration["Spark:FlaskTriggerUrl"]!);
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+
+// Add after existing HTTP client registrations
+
+// GitHub API client
+builder.Services.AddHttpClient("github", client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["GitHub:BaseUrl"]!);
+    client.DefaultRequestHeaders.Add("Accept",
+        "application/vnd.github+json");
+    client.DefaultRequestHeaders.Add(
+        "X-GitHub-Api-Version", "2022-11-28");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// LeetCode client — no base address, uses full URLs
+builder.Services.AddHttpClient("leetcode", client =>
+{
+    client.DefaultRequestHeaders.Add(
+        "Referer", "https://leetcode.com");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// Register enrichment services
+builder.Services.AddScoped<GitHubEnrichmentService>();
+builder.Services.AddScoped<LeetCodeEnrichmentService>();
+builder.Services.AddScoped<ProfileEnrichmentService>();
 
 builder.Services.AddScoped<JwtService>();
 builder.Services.AddScoped<HdfsService>();
