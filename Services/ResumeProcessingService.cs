@@ -3,10 +3,11 @@ using Microsoft.EntityFrameworkCore;
 using Xllerate.Data;
 using Xllerate.Enums;
 using Xllerate.Models;
+using Xllerate.Services.Enrichment;
 
 namespace Xllerate.Services;
 
-public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProcessingService> logger, HdfsService hdfsService) {
+public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProcessingService> logger, ProfileEnrichmentService enrichment, HdfsService hdfsService) {
     public async Task<bool> IsCompleteAsync(Guid resumeId)
     {
         // Spark writes to staging then resume.ParsedAt gets set in ConsumeAsync
@@ -56,13 +57,16 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
             row.IsConsumed = true;
         }
 
-        // Mark resume as fully parsed
+        // Step 3 — Mark resume as fully parsed
         resume.ParsedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
         logger.LogInformation(
             "Consumed {Count} skill rows from staging for resume {ResumeId}",
             staged.Count, resumeId);
+        
+        // Step 4 — auto-enrich from GitHub and LeetCode if found in resume
+        await AutoEnrichFromResumeLinksAsync(resume);
     }
     
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -268,7 +272,6 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
             .ToList();
     }
     
-    // ResumeProcessingService.cs — add static helper
     private static string? ExtractUsername(string? url, string domain)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -305,6 +308,79 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
         catch
         {
             return null;
+        }
+    }
+        
+    private async Task AutoEnrichFromResumeLinksAsync(Resume resume)
+    {
+        if (resume.ParsedData?.Links is null)
+        {
+            logger.LogInformation(
+                "No links found in resume {ResumeId} — skipping auto-enrichment",
+                resume.Id);
+            return;
+        }
+
+        var links = resume.ParsedData.Links;
+
+        // ── GitHub ────────────────────────────────────────────────────────────
+        var githubUsername = ExtractUsername(links.GitHub, "github");
+
+        if (!string.IsNullOrWhiteSpace(githubUsername))
+        {
+            logger.LogInformation(
+                "Auto-enriching GitHub for user {UserId} " +
+                "with username {Username} from resume",
+                resume.UserId, githubUsername);
+            try
+            {
+                await enrichment.EnrichFromGitHubAsync(
+                    resume.UserId, githubUsername);
+            }
+            catch (Exception ex)
+            {
+                // Log but do not fail the whole pipeline
+                logger.LogWarning(ex,
+                    "GitHub auto-enrichment failed for {Username} — " +
+                    "skipping, resume processing continues",
+                    githubUsername);
+            }
+        }
+        else
+        {
+            logger.LogInformation(
+                "No GitHub link found in resume {ResumeId} — skipping GitHub enrichment",
+                resume.Id);
+        }
+
+        // ── LeetCode ──────────────────────────────────────────────────────────
+        var leetcodeUsername = ExtractUsername(links.LeetCode, "leetcode");
+
+        if (!string.IsNullOrWhiteSpace(leetcodeUsername))
+        {
+            logger.LogInformation(
+                "Auto-enriching LeetCode for user {UserId} " +
+                "with username {Username} from resume",
+                resume.UserId, leetcodeUsername);
+            try
+            {
+                await enrichment.EnrichFromLeetCodeAsync(
+                    resume.UserId, leetcodeUsername);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "LeetCode auto-enrichment failed for {Username} — " +
+                    "skipping, resume processing continues",
+                    leetcodeUsername);
+            }
+        }
+        else
+        {
+            logger.LogInformation(
+                "No LeetCode link found in resume {ResumeId} — " +
+                "skipping LeetCode enrichment",
+                resume.Id);
         }
     }
 }
