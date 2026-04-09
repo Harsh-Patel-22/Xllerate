@@ -2,6 +2,7 @@ namespace Xllerate.Models.DTOs.Jobs;
 
 public class JobScrapedDto
 {
+    public string? ExternalId { get; set; }
     public string Title { get; set; } = "";
     public string CompanyName { get; set; } = "";
     public string? Location { get; set; }
@@ -13,5 +14,6 @@ public class JobScrapedDto
     public string? EmploymentType { get; set; }
     public string? Seniority { get; set; }
     public string Source { get; set; } = "";
+    
     public DateTime ScrapedAt { get; set; } = DateTime.UtcNow;
 }
