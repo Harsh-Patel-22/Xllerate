@@ -125,7 +125,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
           .HasDefaultValueSql("NEWID()");
 
          e.Property(s => s.ResumeId)
-          .HasMaxLength(64)
+          .HasMaxLength(120)
           .IsRequired();
 
          e.Property(s => s.SkillName)
