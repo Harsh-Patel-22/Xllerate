@@ -127,6 +127,17 @@ builder.Services.AddScoped<ResumeProcessingService>();
 builder.Services.AddScoped<ResumeUploadService>();
 builder.Services.AddScoped<SparkJobService>();
 
+
+// Register job sources — all registered so orchestrator gets them all
+builder.Services.AddScoped<IJobSource, AdzunaJobSource>();
+builder.Services.AddScoped<IJobSource, JoobleJobSource>();
+builder.Services.AddScoped<IJobSource, LinkedInJobSource>();
+
+// Register orchestrator and normalization
+builder.Services.AddScoped<CompanyEnrichmentService>();
+builder.Services.AddScoped<ScrapingOrchestrator>();
+builder.Services.AddScoped<JobNormalizationService>();
+
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")
     .Get<string[]>() ?? [])));
@@ -134,11 +145,23 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.Al
 builder.Services.AddControllers();
 var app = builder.Build();
 
-app.UseCors();
 
 if (app.Environment.IsDevelopment()) {
 }
 
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    // Restrict dashboard to localhost in development
+    Authorization = [new HangfireLocalOnlyFilter()]
+});
+
+// Schedule nightly scraping run at 2am
+RecurringJob.AddOrUpdate<ScrapingOrchestrator>(
+    "nightly-job-scraping",
+    orchestrator => orchestrator.RunAsync(CancellationToken.None),
+    Cron.Daily(2));
+
+app.UseCors();
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
