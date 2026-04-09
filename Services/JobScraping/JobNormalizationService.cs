@@ -19,18 +19,28 @@ public class JobNormalizationService(
         ["intern"]         = Seniority.Intern,
         ["internship"]     = Seniority.Intern,
         ["trainee"]        = Seniority.Intern,
+        ["fresher"]      = Seniority.Intern,
+        ["graduate"]     = Seniority.Intern,
         ["junior"]         = Seniority.Junior,
         ["associate"]      = Seniority.Junior,
         ["entry"]          = Seniority.Junior,
+        ["entry level"]  = Seniority.Junior,
+        ["entry-level"]  = Seniority.Junior,
+        ["jr."]          = Seniority.Junior,
         ["mid"]            = Seniority.Mid,
         ["intermediate"]   = Seniority.Mid,
+        ["ii"]           = Seniority.Mid,
         ["senior"]         = Seniority.Senior,
         ["sr."]            = Seniority.Senior,
+        ["sr "]          = Seniority.Senior,
+        [" i,"]          = Seniority.Senior,
         ["lead"]           = Seniority.Staff,
         ["staff"]          = Seniority.Staff,
         ["principal"]      = Seniority.Principal,
         ["architect"]      = Seniority.Principal,
         ["director"]       = Seniority.Principal,
+        ["vp"]           = Seniority.Principal,
+        ["head of"]      = Seniority.Principal,
     };
 
     // Known tech skills for extraction from JD text
@@ -67,6 +77,13 @@ public class JobNormalizationService(
 
             try
             {
+                // Detect remote from all available fields — not just source flag
+                var isRemote = DetectRemote(job);
+
+// Extract skills now — used both for JobRoleSkills and RawRequirements
+                var skillMatches = ExtractSkillsFromText(job.Description, job.Title);
+                var skillNames   = skillMatches.Select(s => s.name).ToList();
+                
                 // Upsert company
                 var (company, isNewCompany) =
                     await UpsertCompanyAsync(job.CompanyName);
@@ -88,7 +105,8 @@ public class JobNormalizationService(
                 {
                     // Refresh the scrape timestamp and update raw data
                     existing.ScrapedAt       = DateTime.UtcNow;
-                    existing.RequirementsRaw = BuildRawData(job);
+                    existing.IsRemote        = isRemote;
+                    existing.RequirementsRaw = BuildRawData(job, skillNames);
                     await db.SaveChangesAsync();
                     updated++;
                     continue;
@@ -103,11 +121,11 @@ public class JobNormalizationService(
                     NormalizedTitle = normalizedTitle,
                     Seniority      = seniority,
                     Location       = job.Location,
-                    IsRemote       = job.IsRemote,
+                    IsRemote       = isRemote,
                     IsActive       = true,
                     SourceUrl      = job.SourceUrl,
                     ScrapedAt      = DateTime.UtcNow,
-                    RequirementsRaw = BuildRawData(job)
+                    RequirementsRaw = BuildRawData(job, skillNames)
                 };
 
                 db.JobRoles.Add(jobRole);
@@ -116,9 +134,11 @@ public class JobNormalizationService(
                 // Extract and link required skills from JD text
                 if (!string.IsNullOrWhiteSpace(job.Description))
                 {
-                    await ExtractAndLinkSkillsAsync(
-                        jobRole.Id, job.Description);
+                    await LinkSkillsAsync(
+                        jobRole.Id, skillMatches);
                 }
+                
+                await LinkSkillsAsync(jobRole.Id, skillMatches);
 
                 added++;
             }
@@ -161,35 +181,15 @@ public class JobNormalizationService(
 
     // ── Skill extraction from JD text ─────────────────────────────────────────
 
-    private async Task ExtractAndLinkSkillsAsync(
-        Guid jobRoleId, string description)
+    // Replace ExtractAndLinkSkillsAsync entirely
+    private async Task LinkSkillsAsync(
+        Guid jobRoleId,
+        List<(string name, string normalized, decimal weight)> skillMatches)
     {
-        var descLower = description.ToLower();
-        var found     = new List<(string name, string normalized, decimal weight)>();
+        if (!skillMatches.Any()) return;
 
-        foreach (var keyword in TechSkillKeywords)
+        foreach (var (name, normalized, weight) in skillMatches)
         {
-            var pattern = $@"\b{Regex.Escape(keyword)}\b";
-            if (!Regex.IsMatch(descLower, pattern,
-                RegexOptions.IgnoreCase))
-                continue;
-
-            // Weight based on position in JD —
-            // skills mentioned early carry more importance
-            var firstIndex = descLower.IndexOf(
-                keyword, StringComparison.OrdinalIgnoreCase);
-            var positionRatio = 1.0 - ((double)firstIndex / descLower.Length);
-            var weight = (decimal)Math.Round(
-                0.5 + (positionRatio * 0.5), 4);
-
-            found.Add((keyword, keyword.ToLower(), weight));
-        }
-
-        if (!found.Any()) return;
-
-        foreach (var (name, normalized, weight) in found)
-        {
-            // Resolve canonical skill
             var skill = await db.Skills
                 .FirstOrDefaultAsync(s => s.NormalizedName == normalized);
 
@@ -200,25 +200,22 @@ public class JobNormalizationService(
                     Id             = Guid.NewGuid(),
                     Name           = name,
                     NormalizedName = normalized,
-                    IsVerified     = true   // from JD — treat as verified
+                    IsVerified     = true
                 };
                 db.Skills.Add(skill);
                 await db.SaveChangesAsync();
             }
 
-            // Check if link already exists
             var linkExists = await db.JobRoleSkills
-                .AnyAsync(jrs =>
-                    jrs.JobRoleId == jobRoleId &&
-                    jrs.SkillId   == skill.Id);
+                .AnyAsync(jrs => jrs.JobRoleId == jobRoleId && jrs.SkillId == skill.Id);
 
             if (!linkExists)
             {
                 db.JobRoleSkills.Add(new JobRoleSkill
                 {
-                    JobRoleId       = jobRoleId,
-                    SkillId         = skill.Id,
-                    IsRequired      = weight > 0.7m,
+                    JobRoleId        = jobRoleId,
+                    SkillId          = skill.Id,
+                    IsRequired       = weight >= 0.75m,
                     ImportanceWeight = weight
                 });
             }
@@ -245,18 +242,63 @@ public class JobNormalizationService(
 
     private static Seniority DetectSeniority(string title)
     {
-        var lower = title.ToLower();
+        var lower = " " + title.ToLower().Trim() + " ";
         foreach (var (keyword, seniority) in SeniorityMap)
-            if (lower.Contains(keyword))
+            if (lower.Contains(" " + keyword + " ") || lower.Contains(keyword))
                 return seniority;
         return Seniority.Mid;   // default assumption
     }
 
-    private static JobRoleRawData BuildRawData(JobScrapedDto job) =>
+    private static JobRoleRawData BuildRawData(JobScrapedDto job, List<string> extractedSkills) =>
         new()
         {
             DescriptionText  = job.Description,
-            RawRequirements  = [],
+            RawRequirements  = extractedSkills,
             ScraperVersion   = "v1.0"
         };
+    
+    private static bool DetectRemote(JobScrapedDto job)
+    {
+        var combined = $"{job.Title} {job.Location} {job.Description}".ToLower();
+        return combined.Contains("remote") ||
+               combined.Contains("work from home") ||
+               combined.Contains("wfh") ||
+               combined.Contains("distributed");
+    }
+    
+    private static List<(string name, string normalized, decimal weight)> ExtractSkillsFromText(
+        string? description, string title)
+    {
+        var found = new List<(string name, string normalized, decimal weight)>();
+
+        // Always scan the title first — gives high-weight signals even without a description
+        var titleLower = title.ToLower();
+        foreach (var keyword in TechSkillKeywords)
+        {
+            if (!titleLower.Contains(keyword.ToLower())) continue;
+            found.Add((keyword, keyword.ToLower(), 0.95m)); // title mention = very high weight
+        }
+
+        if (string.IsNullOrWhiteSpace(description)) return found;
+
+        var descLower = description.ToLower();
+        var titleSkills = found.Select(f => f.normalized).ToHashSet();
+
+        foreach (var keyword in TechSkillKeywords)
+        {
+            var normalized = keyword.ToLower();
+            if (titleSkills.Contains(normalized)) continue; // already added from title
+
+            var pattern = $@"\b{Regex.Escape(keyword)}\b";
+            if (!Regex.IsMatch(descLower, pattern, RegexOptions.IgnoreCase)) continue;
+
+            var firstIndex = descLower.IndexOf(keyword, StringComparison.OrdinalIgnoreCase);
+            var positionRatio = 1.0 - ((double)firstIndex / descLower.Length);
+            var weight = (decimal)Math.Round(0.5 + (positionRatio * 0.45), 4); // max 0.95 from desc
+
+            found.Add((keyword, normalized, weight));
+        }
+
+        return found;
+    }
 }

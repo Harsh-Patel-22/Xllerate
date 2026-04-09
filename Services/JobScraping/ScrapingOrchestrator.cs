@@ -6,7 +6,8 @@ namespace Xllerate.Services.JobScraping;
 public class ScrapingOrchestrator(
     IEnumerable<IJobSource> sources,
     JobNormalizationService normalization,
-    ILogger<ScrapingOrchestrator> logger) {
+    ILogger<ScrapingOrchestrator> logger,
+    CompanyEnrichmentService companyEnricher) {
     public async Task<ScrapingRunResult> RunAsync(
         CancellationToken ct = default)
     {
@@ -58,14 +59,16 @@ public class ScrapingOrchestrator(
         result.JobsUpdated    = updated;
         result.CompaniesAdded = companiesAdded;
         result.CompletedAt    = DateTime.UtcNow;
-
+        
+        await companyEnricher.EnrichAsync(ct);
+        
         logger.LogInformation(
             "Scraping run complete — " +
             "Added: {Added}, Updated: {Updated}, " +
             "Companies: {Companies}, Duration: {Duration}s",
             added, updated, companiesAdded,
             result.Duration.TotalSeconds);
-
+    
         return result;
     }
 }
