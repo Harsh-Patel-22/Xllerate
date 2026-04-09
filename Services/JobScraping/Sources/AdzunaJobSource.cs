@@ -52,8 +52,11 @@ public class AdzunaJobSource(
                         continue;
                     }
 
-                    var json = await response.Content.ReadAsStringAsync(ct);
-                    var parsed = JsonDocument.Parse(json);
+                    // var json = await response.Content.ReadAsStringAsync(ct);
+                    var bytes = await response.Content.ReadAsByteArrayAsync(ct);
+                    var content = System.Text.Encoding.UTF8.GetString(bytes);
+                    
+                    var parsed = JsonDocument.Parse(content);
 
                     if (!parsed.RootElement.TryGetProperty(
                         "results", out var jobsArray))
