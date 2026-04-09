@@ -7,6 +7,11 @@ using Xllerate.Data;
 using Xllerate.Models;
 using Xllerate.Services;
 using Xllerate.Services.Enrichment;
+using Hangfire;
+using Hangfire.SqlServer;
+using Xllerate.Infrastructure;
+using Xllerate.Services.JobScraping;
+using Xllerate.Services.JobScraping.Sources;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -92,6 +97,24 @@ builder.Services.AddHttpClient("leetcode", client =>
         "Referer", "https://leetcode.com");
     client.Timeout = TimeSpan.FromSeconds(30);
 });
+
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UseSqlServerStorage(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        new SqlServerStorageOptions
+        {
+            CommandBatchMaxTimeout       = TimeSpan.FromMinutes(5),
+            SlidingInvisibilityTimeout   = TimeSpan.FromMinutes(5),
+            QueuePollInterval            = TimeSpan.Zero,
+            UseRecommendedIsolationLevel = true,
+            DisableGlobalLocks           = true
+        }));
+
+builder.Services.AddHangfireServer();
+
 
 // Register enrichment services
 builder.Services.AddScoped<GitHubEnrichmentService>();
