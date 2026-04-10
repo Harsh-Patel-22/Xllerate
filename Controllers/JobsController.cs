@@ -8,6 +8,7 @@ using Xllerate.Models.DTOs.Jobs;
 using Xllerate.Services.JobScraping;
 using Hangfire;
 using Xllerate.Enums;
+using Xllerate.Services;
 
 namespace Xllerate.Controllers;
 
@@ -211,5 +212,47 @@ public class JobsController(
     {
         await enricher.EnrichAsync(ct);
         return Ok(new { message = "Company enrichment complete." });
+    }
+    
+    // POST /api/jobs/aggregate-roles — trigger aggregation manually
+    [HttpPost("aggregate-roles")]
+    [Authorize]
+    public async Task<IActionResult> AggregateRoles(
+        [FromServices] RoleProfileAggregationService aggregator,
+        CancellationToken ct)
+    {
+        await aggregator.AggregateAsync(ct);
+        return Ok(new { message = "Role profile aggregation complete." });
+    }
+
+    [HttpGet("role-profiles")]
+    public async Task<IActionResult> GetRoleProfiles(
+        CancellationToken ct)
+    {
+        var profiles = await db.RoleProfiles
+            .Include(rp => rp.Skills)
+            .ThenInclude(rps => rps.Skill)
+            .OrderBy(rp => rp.DisplayName)
+            .Select(rp => new
+            {
+                rp.RoleKey,
+                rp.DisplayName,
+                rp.JobsSampled,
+                rp.Confidence,  
+                rp.LastAggregatedAt,
+                Skills = rp.Skills
+                    .OrderByDescending(s => s.ProbabilisticScore)
+                    .Select(s => new
+                    {
+                        s.Skill.Name,
+                        s.FrequencyRatio,
+                        s.AggregatedWeight,
+                        s.ProbabilisticScore,
+                        s.IsCore
+                    })
+            })
+            .ToListAsync(ct);
+
+        return Ok(profiles);
     }
 }

@@ -127,6 +127,7 @@ builder.Services.AddScoped<ResumeProcessingService>();
 builder.Services.AddScoped<ResumeUploadService>();
 builder.Services.AddScoped<SparkJobService>();
 
+builder.Services.AddScoped<AnalysisService>();  
 
 // Register job sources — all registered so orchestrator gets them all
 builder.Services.AddScoped<IJobSource, AdzunaJobSource>();
@@ -137,6 +138,7 @@ builder.Services.AddScoped<IJobSource, LinkedInJobSource>();
 builder.Services.AddScoped<CompanyEnrichmentService>();
 builder.Services.AddScoped<ScrapingOrchestrator>();
 builder.Services.AddScoped<JobNormalizationService>();
+builder.Services.AddScoped<RoleProfileAggregationService>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")
