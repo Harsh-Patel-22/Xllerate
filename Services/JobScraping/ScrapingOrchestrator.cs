@@ -7,7 +7,8 @@ public class ScrapingOrchestrator(
     IEnumerable<IJobSource> sources,
     JobNormalizationService normalization,
     ILogger<ScrapingOrchestrator> logger,
-    CompanyEnrichmentService companyEnricher) {
+    CompanyEnrichmentService companyEnricher,
+    RoleProfileAggregationService roleAggregator) {
     public async Task<ScrapingRunResult> RunAsync(
         CancellationToken ct = default)
     {
@@ -61,6 +62,7 @@ public class ScrapingOrchestrator(
         result.CompletedAt    = DateTime.UtcNow;
         
         await companyEnricher.EnrichAsync(ct);
+        await roleAggregator.AggregateAsync(ct);
         
         logger.LogInformation(
             "Scraping run complete — " +
