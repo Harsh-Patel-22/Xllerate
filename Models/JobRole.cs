@@ -22,7 +22,6 @@ public class JobRole
     public Company Company { get; set; } = null!;
     public ICollection<JobRoleSkill> RequiredSkills { get; set; } = [];
     public ICollection<Analysis> Analyses { get; set; } = [];
-    public ICollection<JobRoleSkill> JobRoleSkills { get; set; } = [];
 }
 
 public class JobRoleRawData

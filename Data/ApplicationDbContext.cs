@@ -30,6 +30,9 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     
     public DbSet<SparkSkillStaging> SparkSkillStaging => Set<SparkSkillStaging>();
 
+    public DbSet<RoleProfile> RoleProfiles => Set<RoleProfile>();
+    public DbSet<RoleProfileSkill> RoleProfileSkills => Set<RoleProfileSkill>();
+
     // ── Auto-set UpdatedAt on every SaveChanges ───────────────────────────────
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
     {
@@ -518,6 +521,23 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             e.HasOne(sg => sg.Skill)
              .WithMany(s => s.SkillGaps)
              .HasForeignKey(sg => sg.SkillId)
+             .OnDelete(DeleteBehavior.Restrict);
+        });
+        
+        mb.Entity<RoleProfileSkill>(e => {
+            e.HasKey(rps => new { rps.RoleProfileId, rps.SkillId });
+
+            e.Property(rps => rps.AggregatedWeight).HasColumnType("decimal(5,4)");
+            e.Property(rps => rps.FrequencyRatio).HasColumnType("decimal(5,4)");
+
+            e.HasOne(rps => rps.RoleProfile)
+             .WithMany(rp => rp.Skills)
+             .HasForeignKey(rps => rps.RoleProfileId)
+             .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(rps => rps.Skill)
+             .WithMany()
+             .HasForeignKey(rps => rps.SkillId)
              .OnDelete(DeleteBehavior.Restrict);
         });
 
