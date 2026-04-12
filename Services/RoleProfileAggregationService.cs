@@ -9,48 +9,30 @@ namespace Xllerate.Services;
 public class RoleProfileAggregationService(
     ApplicationDbContext db,
     IConfiguration config,
+    RoleBucketDiscoveryService bucketDiscovery,
     ILogger<RoleProfileAggregationService> logger) {
     private const int MinJobsRequired = 1;
     private const decimal MinFrequencyThreshold = 0.02m;
 
     private const decimal BayesianPrior = 0.15m;
     private const int PriorStrength = 5;
-
-    private static readonly Dictionary<string, (string DisplayName, string[] Keywords)> RoleBuckets = new()
-    {
-        ["software_engineering"] = ("Software Engineer", new[]
-        {
-            "software engineer", "software developer", "swe",
-            "backend developer", "backend engineer",
-            "frontend developer", "frontend engineer",
-            "full stack", "fullstack"
-        }),
-        ["data_ml"] = ("Data / ML Engineer", new[]
-        {
-            "data engineer", "data scientist", "machine learning",
-            "ml engineer", "ai engineer", "mlops", "data analyst"
-        }),
-        ["devops_cloud"] = ("DevOps / Cloud Engineer", new[]
-        {
-            "devops", "cloud engineer", "site reliability",
-            "sre", "platform engineer", "infrastructure engineer"
-        }),
-        ["product_management"] = ("Product Manager", new[]
-        {
-            "product manager", "technical product manager", "tpm", "program manager"
-        }),
-    };
+    
+    
 
     public async Task AggregateAsync(CancellationToken ct = default)
     {
         logger.LogInformation("Role profile aggregation started.");
+        
+        var buckets = await bucketDiscovery.ResolveBucketsAsync(ct);
 
-        foreach (var (roleKey, (displayName, keywords)) in RoleBuckets)
+        logger.LogInformation("Aggregating {Count} role buckets.", buckets.Count);
+
+        foreach (var (roleKey, (displayName, keywords)) in buckets)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                await AggregateRoleAsync(roleKey, displayName, keywords, ct);
+                await AggregateRoleAsync(roleKey, displayName, [.. keywords], ct);
             }
             catch (Exception ex)
             {

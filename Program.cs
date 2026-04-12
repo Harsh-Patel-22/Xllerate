@@ -138,6 +138,7 @@ builder.Services.AddScoped<IJobSource, LinkedInJobSource>();
 builder.Services.AddScoped<CompanyEnrichmentService>();
 builder.Services.AddScoped<ScrapingOrchestrator>();
 builder.Services.AddScoped<JobNormalizationService>();
+builder.Services.AddScoped<RoleBucketDiscoveryService>();
 builder.Services.AddScoped<RoleProfileAggregationService>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
