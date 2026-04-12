@@ -34,11 +34,18 @@ public class AnalysisController(AnalysisService analysisService) : ControllerBas
         }
     }
 
-    // GET /api/analysis — all analyses for current user
-    [HttpGet]
-    public async Task<IActionResult> GetAll(CancellationToken ct)
+    // GET /api/analysis/jobs — all analyses for current user
+    [HttpGet("jobs")]
+    public async Task<IActionResult> GetAllAgainstJobs(CancellationToken ct)
     {
-        var results = await analysisService.GetAllForUserAsync(UserId, ct);
+        var results = await analysisService.GetAllForUserAgainstJobsAsync(UserId, ct);
+        return Ok(results);
+    }
+    // GET /api/analysis/role — all analyses for current user
+    [HttpGet("role")]
+    public async Task<IActionResult> GetAllAgainstRoles(CancellationToken ct)
+    {
+        var results = await analysisService.GetAllForUserAgainstRolesAsync(UserId, ct);
         return Ok(results);
     }
 
@@ -55,5 +62,14 @@ public class AnalysisController(AnalysisService analysisService) : ControllerBas
         {
             return NotFound(new { error = ex.Message });
         }
+    }
+    
+    [HttpPost("desired-role")]
+    [Authorize]
+    public async Task<IActionResult> AnalyzeDesiredRole([FromServices] InsightService insightService,CancellationToken ct)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await analysisService.AnalyzeAgainstDesiredRoleAsync(userId, insightService,ct);
+        return Ok(result);
     }
 }

@@ -116,6 +116,9 @@ builder.Services.AddHangfire(config => config
 builder.Services.AddHangfireServer();
 
 
+builder.Services.AddHttpClient("gemini");
+builder.Services.AddScoped<InsightService>();
+
 // Register enrichment services
 builder.Services.AddScoped<GitHubEnrichmentService>();
 builder.Services.AddScoped<LeetCodeEnrichmentService>();
@@ -140,6 +143,9 @@ builder.Services.AddScoped<ScrapingOrchestrator>();
 builder.Services.AddScoped<JobNormalizationService>();
 builder.Services.AddScoped<RoleBucketDiscoveryService>();
 builder.Services.AddScoped<RoleProfileAggregationService>();
+
+builder.Services.AddScoped<UserProfileService>();
+builder.Services.AddScoped<JobFeedService>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")

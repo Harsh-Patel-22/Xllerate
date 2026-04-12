@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Xllerate.Data;
@@ -135,7 +136,7 @@ public class AnalysisService(
         return BuildResultDto(analysis, analysis.JobRole, analysis.SkillGaps.ToList());
     }
 
-    public async Task<List<AnalysisResultDto>> GetAllForUserAsync(Guid userId, CancellationToken ct = default)
+    public async Task<List<AnalysisResultDto>> GetAllForUserAgainstJobsAsync(Guid userId, CancellationToken ct = default)
     {
         var analyses = await db.Analyses
             .Include(a => a.JobRole).ThenInclude(j => j.Company)
@@ -145,6 +146,23 @@ public class AnalysisService(
             .ToListAsync(ct);
 
         return analyses.Select(a => BuildResultDto(a, a.JobRole, a.SkillGaps.ToList())).ToList();
+    }
+    public async Task<List<AnalysisResultDto>> GetAllForUserAgainstRolesAsync(Guid userId, CancellationToken ct = default)
+    {
+        var analyses = await db.Analyses
+            .Include(a => a.JobRole).ThenInclude(j => j.Company)
+            .Include(a => a.SkillGaps).ThenInclude(g => g.Skill)
+            .Where(a => a.UserId == userId)
+            .OrderByDescending(a => a.CreatedAt)
+            .ToListAsync(ct);
+        
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+                   ?? throw new KeyNotFoundException("User not found.");
+
+        if (string.IsNullOrWhiteSpace(user.DesiredRole))
+            throw new InvalidOperationException("No desired role set. Update your profile first.");
+        var role = await db.RoleProfiles.Where(rp => rp.RoleKey == user.DesiredRole).FirstOrDefaultAsync(cancellationToken: ct);
+        return analyses.Select(a => BuildRoleProfileResultDto(a, role, a.SkillGaps.ToList())).ToList();
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -210,8 +228,8 @@ public class AnalysisService(
         var unverified = gaps.Count(g => g.GapType == GapType.Unverified);
 
         // Total required = gaps + fully matched skills
-        // We don't have matched count here directly so derive from JobRoleSkills
-        var totalRequired = jobRole.RequiredSkills?.Count ?? (gaps.Count + matched);
+        var totalRequired = jobRole.RequiredSkills?.Count ?? gaps.Count;
+        var fullyMatched  = totalRequired - gaps.Count;
 
         return new AnalysisResultDto
         {
@@ -235,7 +253,152 @@ public class AnalysisService(
             Summary = new SkillSummaryDto
             {
                 TotalRequired = totalRequired,
-                Matched       = totalRequired - missing - weak - unverified,
+                Matched       = Math.Max(0, fullyMatched),
+                Missing       = missing,
+                Weak          = weak,
+                Unverified    = unverified
+            }
+        };
+    }
+    
+    public async Task<AnalysisResultDto> AnalyzeAgainstDesiredRoleAsync(Guid userId, InsightService insightService, CancellationToken ct = default)
+    {
+        // ── Load user + desired role ──────────────────────────────────────────
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+            ?? throw new KeyNotFoundException("User not found.");
+
+        if (string.IsNullOrWhiteSpace(user.DesiredRole))
+            throw new InvalidOperationException("No desired role set. Update your profile first.");
+
+        // ── Match desired role → RoleProfile ─────────────────────────────────
+        // Try exact RoleKey match first, then DisplayName contains
+        var roleProfile = await db.RoleProfiles
+            .Include(rp => rp.Skills)
+                .ThenInclude(rps => rps.Skill)
+            .FirstOrDefaultAsync(rp =>
+                rp.RoleKey == user.DesiredRole ||
+                rp.DisplayName.Contains(user.DesiredRole), ct)
+            ?? throw new KeyNotFoundException($"No aggregated role profile found for '{user.DesiredRole}'. Run aggregation first.");
+
+        var requiredSkills = roleProfile.Skills.ToList();
+
+        if (requiredSkills.Count == 0)
+            throw new InvalidOperationException("Role profile has no skills. Run aggregation first.");
+
+        // ── Load user skills ──────────────────────────────────────────────────
+        var userSkills = await db.UserSkills
+            .Include(us => us.Skill)
+            .Where(us => us.UserId == userId)
+            .ToListAsync(ct);
+
+        var userSkillMap = userSkills.ToDictionary(
+            us => us.Skill.NormalizedName,
+            us => us,
+            StringComparer.OrdinalIgnoreCase);
+
+        // ── Create Analysis record ────────────────────────────────────────────
+        var analysis = new Analysis
+        {
+            Id           = Guid.NewGuid(),
+            UserId       = userId,
+            JobRoleId    = null,
+            Status       = AnalysisStatus.Processing,
+            ModelVersion = "v1.0",
+            CreatedAt    = DateTime.UtcNow
+        };
+        db.Analyses.Add(analysis);
+        await db.SaveChangesAsync(ct);
+
+        // ── Core gap computation ──────────────────────────────────────────────
+        var gaps        = new List<SkillGap>();
+        var matchScore  = 0m;
+        var totalWeight = requiredSkills.Sum(r => r.ProbabilisticScore);
+
+        foreach (var required in requiredSkills)
+        {
+            var skillNorm = required.Skill.NormalizedName;
+            userSkillMap.TryGetValue(skillNorm, out var userSkill);
+
+            var userScore = ComputeUserScore(userSkill, required.ProbabilisticScore);
+            var gapType   = ClassifyGap(userSkill, userScore, required.ProbabilisticScore);
+
+            if (gapType == null)
+            {
+                matchScore += required.ProbabilisticScore;
+                continue;
+            }
+
+            var severity = ClassifySeverity(required.ProbabilisticScore, gapType.Value);
+
+            gaps.Add(new SkillGap
+            {
+                Id             = Guid.NewGuid(),
+                AnalysisId     = analysis.Id,
+                SkillId        = required.SkillId,
+                GapType        = gapType.Value,
+                Severity       = severity,
+                UserScore      = userScore,
+                RequiredScore  = required.AggregatedWeight,
+                Recommendation = BuildRecommendation(required.Skill.Name, gapType.Value, severity)
+            });
+
+            matchScore += userScore;
+        }
+
+        // ── Finalize ──────────────────────────────────────────────────────────
+        var matchPct = totalWeight > 0
+            ? Math.Round((matchScore / totalWeight) * 100, 2)
+            : 0m;
+
+        matchPct = Math.Max(0, Math.Min(100, matchPct)); // clamp 0–100
+
+        db.SkillGaps.AddRange(gaps);
+        analysis.MatchPercentage = matchPct;
+        analysis.Status          = AnalysisStatus.Complete;
+        await db.SaveChangesAsync(ct);
+
+        var result   = BuildRoleProfileResultDto(analysis, roleProfile, gaps);
+        var insight  = await insightService.GenerateInsightsAsync(result, ct);
+
+        analysis.InsightData = insight;
+        await db.SaveChangesAsync(ct);
+
+        result.InsightData = insight;
+        return result;
+    }
+    
+    private static AnalysisResultDto BuildRoleProfileResultDto(
+        Analysis analysis, RoleProfile roleProfile, List<SkillGap> gaps)
+    {
+        var totalRequired = roleProfile.Skills.Count;
+        var missing       = gaps.Count(g => g.GapType == GapType.Missing);
+        var weak          = gaps.Count(g => g.GapType == GapType.Weak);
+        var unverified    = gaps.Count(g => g.GapType == GapType.Unverified);
+
+        return new AnalysisResultDto
+        {
+            AnalysisId      = analysis.Id,
+            JobTitle        = roleProfile.DisplayName,
+            CompanyName     = "Market Aggregate",
+            MatchPercentage = analysis.MatchPercentage,
+            Status          = analysis.Status.ToString(),
+            CreatedAt       = analysis.CreatedAt,
+            InsightData = analysis.InsightData,
+            SkillGaps       = gaps.OrderByDescending(g => g.Severity)
+                .ThenByDescending(g => g.RequiredScore)
+                .Select(g => new SkillGapDto
+                {
+                    SkillName      = g.Skill?.Name ?? "Unknown",
+                    GapType        = g.GapType.ToString(),
+                    Severity       = g.Severity.ToString(),
+                    UserScore      = g.UserScore,
+                    RequiredScore  = g.RequiredScore,
+                    Recommendation = g.Recommendation
+                }).ToList(),
+            Summary = new SkillSummaryDto
+            {
+                TotalRequired = totalRequired,
+                Matched       = Math.Max(0, totalRequired - gaps.Count),
                 Missing       = missing,
                 Weak          = weak,
                 Unverified    = unverified

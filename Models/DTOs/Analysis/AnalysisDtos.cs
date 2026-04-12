@@ -1,3 +1,5 @@
+using Xllerate.Models.DTOs.User;
+
 namespace Xllerate.Models.DTOs.Analysis;
 
 public class TriggerAnalysisRequest
@@ -13,6 +15,7 @@ public class AnalysisResultDto
     public decimal MatchPercentage { get; set; }
     public string Status { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
+    public AnalysisInsight? InsightData { get; set; }
     public List<SkillGapDto> SkillGaps { get; set; } = [];
     public SkillSummaryDto Summary { get; set; } = new();
 }
@@ -26,6 +29,7 @@ public class SkillGapDto
     public decimal RequiredScore { get; set; }
     public decimal ScoreGap => RequiredScore - UserScore;
     public string? Recommendation { get; set; }
+    public List<InsightDto> Insights { get; set; } = [];
 }
 
 public class SkillSummaryDto
