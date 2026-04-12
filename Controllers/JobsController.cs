@@ -255,4 +255,43 @@ public class JobsController(
 
         return Ok(profiles);
     }
+    [HttpGet("role-name")]
+    public async Task<IActionResult> GetRoleProfileNames(
+        CancellationToken ct)
+    {
+        var profiles = await db.RoleProfiles
+            .OrderBy(rp => rp.DisplayName)
+            .Select(rp => new
+            {
+                rp.RoleKey,
+                rp.DisplayName,
+                rp.JobsSampled,
+                rp.Confidence,
+            })
+            .ToListAsync(ct);
+
+        return Ok(profiles);
+    }
+    
+    [HttpGet("role-buckets")]
+    [Authorize]
+    public async Task<IActionResult> GetRoleBuckets(
+        CancellationToken ct)
+    {
+        var mappings = await db.RoleKeywordMappings
+            .GroupBy(m => m.RoleKey)
+            .Select(g => new
+            {
+                RoleKey  = g.Key,
+                Keywords = g.Select(m => new
+                {
+                    m.Keyword,
+                    m.IsSeeded,
+                    m.ObservedCount
+                }).OrderByDescending(m => m.ObservedCount).ToList()
+            })
+            .ToListAsync(ct);
+
+        return Ok(mappings);
+    }
 }

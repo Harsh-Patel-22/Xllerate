@@ -20,6 +20,31 @@ public class ResumeController(
     ApplicationDbContext db,
     ILogger<ResumeController> logger)
     : ControllerBase {
+
+    [HttpGet()]
+    public async Task<IActionResult> Get(Guid userId, [FromServices] UserProfileService userProfileService, CancellationToken ct = default) {
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
+        if (user == null) return null;
+
+        // Latest resume
+        var resume = await db.Resumes
+            .OrderByDescending(r => r.ParsedAt)
+            .FirstOrDefaultAsync(r => r.UserId == userId, ct);
+
+        var userSkills = await db.UserSkills
+            .Include(us => us.Skill)
+            .Include(us => us.Sources)
+            .Where(us => us.UserId == userId)
+            .ToListAsync(ct);
+        
+        var externalProfiles = await db.ExternalProfiles
+            .Where(ep => ep.UserId == userId)
+            .ToListAsync(ct);
+        
+        return Ok(userProfileService.BuildResumeDto(resume, userSkills, externalProfiles));
+    }
+    
+    
     // ── POST /api/resume/upload ───────────────────────────────────────────────
     [HttpPost("upload")]
     [RequestSizeLimit(10 * 1024 * 1024)]  // 10MB
