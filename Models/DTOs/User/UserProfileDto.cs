@@ -37,7 +37,8 @@ public class ResumeEducationDto
     public string? Degree { get; set; }
     public string? Institution { get; set; }
     public string? Period { get; set; }
-    public string? Gpa { get; set; }
+    public string? GradeValue { get; set; }   // "8.5", "3.8", "A+", "85"
+    public string? GradeType { get; set; }    // "gpa_10" | "gpa_4" | "percentage" | "letter"
 }
 
 public class ResumeExperienceDto

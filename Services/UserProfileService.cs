@@ -82,7 +82,8 @@ public class UserProfileService(ApplicationDbContext db)
                 Degree      = e.Degree,
                 Institution = e.Institution,
                 Period      = $"{e.StartYear}–{e.EndYear}",
-                Gpa         = e.Grade,
+                GradeValue = e.GradeValue,
+                GradeType = e.GradeType
             }).ToList() ?? [],
             Experience = parsed?.WorkExperience?.Select(e => new ResumeExperienceDto
             {
