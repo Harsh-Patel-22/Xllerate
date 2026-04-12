@@ -32,6 +32,8 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
 
     public DbSet<RoleProfile> RoleProfiles => Set<RoleProfile>();
     public DbSet<RoleProfileSkill> RoleProfileSkills => Set<RoleProfileSkill>();
+    public DbSet<RoleKeywordMapping> RoleKeywordMappings => Set<RoleKeywordMapping>();
+
 
     // ── Auto-set UpdatedAt on every SaveChanges ───────────────────────────────
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
@@ -448,6 +450,14 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
              .HasForeignKey(jrs => jrs.SkillId)
              .OnDelete(DeleteBehavior.Restrict);
         });
+        
+        mb.Entity<RoleKeywordMapping>(e =>
+        {
+             e.HasKey(r => r.Id);
+             e.HasIndex(r => new { r.RoleKey, r.Keyword }).IsUnique();
+             e.Property(r => r.Keyword).HasMaxLength(200);
+             e.Property(r => r.RoleKey).HasMaxLength(100);
+        });
 
         // ── Analysis ──────────────────────────────────────────────────────────
         mb.Entity<Analysis>(e =>
@@ -471,7 +481,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             e.OwnsOne(a => a.InsightData, i => i.ToJson());
 
             e.HasIndex(a => new { a.UserId, a.CreatedAt });
-            e.HasIndex(a => new { a.UserId, a.JobRoleId });
+            e.HasIndex(a => new { a.UserId, a.JobRoleId }).HasFilter("[JobRoleId] IS NOT NULL");
 
             e.HasOne(a => a.User)
              .WithMany(u => u.Analyses)
@@ -482,6 +492,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             e.HasOne(a => a.JobRole)
              .WithMany(jr => jr.Analyses)
              .HasForeignKey(a => a.JobRoleId)
+             .IsRequired(false)
              .OnDelete(DeleteBehavior.Restrict);
         });
 

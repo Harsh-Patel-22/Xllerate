@@ -6,6 +6,7 @@ namespace Xllerate.Models;
 public class User : IdentityUser<Guid>, ITimestamped
 {
     public required string FullName { get; set; }
+    public string? DesiredRole { get; set; }
     public string? AvatarUrl { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
