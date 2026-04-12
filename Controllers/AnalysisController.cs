@@ -66,10 +66,20 @@ public class AnalysisController(AnalysisService analysisService) : ControllerBas
     
     [HttpPost("desired-role")]
     [Authorize]
-    public async Task<IActionResult> AnalyzeDesiredRole([FromServices] InsightService insightService,CancellationToken ct)
+    public async Task<IActionResult> AnalyzeDesiredRole(CancellationToken ct)
     {
         var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await analysisService.AnalyzeAgainstDesiredRoleAsync(userId, insightService,ct);
+        var result = await analysisService.AnalyzeAgainstDesiredRoleAsync(userId ,ct);
+        return Ok(result);
+    }
+    
+    [HttpPost("posting")]
+    [Authorize]
+    public async Task<IActionResult> AnalyzeAgainstPosting(
+        [FromBody] AnalyzeAgainstPostingRequest request, CancellationToken ct)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await analysisService.AnalyzeAgainstPostingAsync(userId, request, ct);
         return Ok(result);
     }
 }

@@ -18,6 +18,8 @@ public class AnalysisResultDto
     public AnalysisInsight? InsightData { get; set; }
     public List<SkillGapDto> SkillGaps { get; set; } = [];
     public SkillSummaryDto Summary { get; set; } = new();
+    
+    public List<string> SoftSkillSuggestions { get; set; } = [];
 }
 
 public class SkillGapDto
@@ -39,4 +41,13 @@ public class SkillSummaryDto
     public int Missing { get; set; }
     public int Weak { get; set; }                             // have skill but score too low
     public int Unverified { get; set; }                       // claimed but no evidence
+}
+
+public class AnalyzeAgainstPostingRequest
+{
+    // Case 1: raw text
+    public string? JobText { get; set; }
+
+    // Case 2: URL — System scrapes it
+    public string? JobUrl { get; set; }
 }
