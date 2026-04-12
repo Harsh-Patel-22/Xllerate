@@ -35,10 +35,10 @@ public class UserController(
     }
 
     [HttpPost("role/{role}")]
-    public async Task<IActionResult> PostRole([FromRoute] string role, [FromServices] ApplicationDbContext db, [FromServices] AnalysisService analysisService, [FromServices] InsightService insightService, CancellationToken ct) {
-        var rows = await db.Users.Where(user => user.Id == UserId).ExecuteUpdateAsync(setter => setter.SetProperty(u => u.DesiredRole, role));
+    public async Task<IActionResult> PostRole([FromRoute] string role, [FromServices] ApplicationDbContext db, [FromServices] AnalysisService analysisService, CancellationToken ct) {
+        var rows = await db.Users.Where(user => user.Id == UserId).ExecuteUpdateAsync(setter => setter.SetProperty(u => u.DesiredRole, role), cancellationToken: ct);
         if (rows == 0) return BadRequest(new {message = "Could not update the role."});
-        await analysisService.AnalyzeAgainstDesiredRoleAsync(UserId,  insightService, ct);
+        await analysisService.AnalyzeAgainstDesiredRoleAsync(UserId, ct);
         return Ok(new {message = "Role Updated Successfully"});
     }
     

@@ -7,13 +7,11 @@ using Xllerate.Models.DTOs.Enrichment;
 
 namespace Xllerate.Services.Enrichment;
 
-public class ProfileEnrichmentService
-{
-    private readonly ApplicationDbContext _db;
-    private readonly GitHubEnrichmentService _gitHub;
-    private readonly LeetCodeEnrichmentService _leetCode;
-    private readonly ILogger<ProfileEnrichmentService> _logger;
-
+public class ProfileEnrichmentService(
+    ApplicationDbContext db,
+    GitHubEnrichmentService gitHub,
+    LeetCodeEnrichmentService leetCode,
+    ILogger<ProfileEnrichmentService> logger) {
     // Language → normalized skill name mapping
     private static readonly Dictionary<string, string> LanguageSkillMap = new(
         StringComparer.OrdinalIgnoreCase)
@@ -40,18 +38,6 @@ public class ProfileEnrichmentService
         ["SCSS"]       = "css",
     };
 
-    public ProfileEnrichmentService(
-        ApplicationDbContext db,
-        GitHubEnrichmentService gitHub,
-        LeetCodeEnrichmentService leetCode,
-        ILogger<ProfileEnrichmentService> logger)
-    {
-        _db = db;
-        _gitHub = gitHub;
-        _leetCode = leetCode;
-        _logger = logger;
-    }
-
     // ── GitHub ────────────────────────────────────────────────────────────────
 
     public async Task<EnrichmentSummary> EnrichFromGitHubAsync(
@@ -61,12 +47,12 @@ public class ProfileEnrichmentService
             userId, Platform.GitHub, username);
 
         profile.SyncStatus = SyncStatus.Syncing;
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync();
 
         try
         {
             // Fetch from GitHub API
-            var data = await _gitHub.FetchAsync(username);
+            var data = await gitHub.FetchAsync(username);
 
             // Persist raw snapshot
             profile.RawData = JsonSerializer.Serialize(data);
@@ -78,13 +64,13 @@ public class ProfileEnrichmentService
                 userId, data, profile.Id);
 
             // Populate projects from repos
-            var projectsAdded = await SyncGitHubProjectsAsync(userId, data);
+            var projectsAdded = await SyncGitHubProjectsAsync(userId, data, profile.Id);
 
             profile.SyncStatus = SyncStatus.Complete;
             profile.SyncErrorMessage = null;
-            await _db.SaveChangesAsync();
+            await db.SaveChangesAsync();
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "GitHub enrichment complete for user {UserId} — " +
                 "{Skills} skills, {Projects} projects",
                 userId, skillsExtracted, projectsAdded);
@@ -99,9 +85,9 @@ public class ProfileEnrichmentService
         {
             profile.SyncStatus = SyncStatus.Failed;
             profile.SyncErrorMessage = ex.Message;
-            await _db.SaveChangesAsync();
+            await db.SaveChangesAsync();
 
-            _logger.LogError(ex,
+            logger.LogError(ex,
                 "GitHub enrichment failed for user {UserId}", userId);
             throw;
         }
@@ -116,11 +102,11 @@ public class ProfileEnrichmentService
             userId, Platform.LeetCode, username);
 
         profile.SyncStatus = SyncStatus.Syncing;
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync();
 
         try
         {
-            var data = await _leetCode.FetchAsync(username);
+            var data = await leetCode.FetchAsync(username);
 
             profile.RawData = JsonSerializer.Serialize(data);
             profile.Username = username;
@@ -134,9 +120,9 @@ public class ProfileEnrichmentService
 
             profile.SyncStatus = SyncStatus.Complete;
             profile.SyncErrorMessage = null;
-            await _db.SaveChangesAsync();
+            await db.SaveChangesAsync();
 
-            _logger.LogInformation(
+            logger.LogInformation(
                 "LeetCode enrichment complete for user {UserId} — " +
                 "{Skills} skills extracted, {Solved} problems solved",
                 userId, skillsExtracted, data.TotalSolved);
@@ -151,9 +137,9 @@ public class ProfileEnrichmentService
         {
             profile.SyncStatus = SyncStatus.Failed;
             profile.SyncErrorMessage = ex.Message;
-            await _db.SaveChangesAsync();
+            await db.SaveChangesAsync();
 
-            _logger.LogError(ex,
+            logger.LogError(ex,
                 "LeetCode enrichment failed for user {UserId}", userId);
             throw;
         }
@@ -189,6 +175,35 @@ public class ProfileEnrichmentService
                 confidence, SkillSourceType.GitHub,
                 $"Used in {data.Repos.Count(r => r.Language == language)} repos " +
                 $"({bytes:N0} bytes)",
+                profileId);
+
+            if (updated) count++;
+        }
+        
+        // Extract frameworks from repo descriptions + topics
+        var frameworkCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var repo in data.Repos.Where(r => !r.Fork).Take(20))
+        {
+            var textToScan = string.Join(" ",
+                repo.Description ?? "",
+                string.Join(" ", repo.Topics ?? []));
+
+            foreach (var framework in ExtractFrameworksFromText(textToScan))
+                frameworkCounts[framework] = frameworkCounts.GetValueOrDefault(framework, 0) + 1;
+        }
+
+        foreach (var (framework, repoCount) in frameworkCounts)
+        {
+            var normalizedName = framework.ToLowerInvariant().Trim();
+
+            // More repos mentioning it = higher confidence, capped at 0.65
+            var confidence = Math.Min(0.65m, 0.35m + (0.05m * repoCount));
+
+            var updated = await UpsertUserSkillAsync(
+                userId, framework, normalizedName,
+                confidence, SkillSourceType.GitHub,
+                $"Detected in {repoCount} repo description(s) or topics",
                 profileId);
 
             if (updated) count++;
@@ -257,7 +272,7 @@ public class ProfileEnrichmentService
         Guid userId, LeetCodeEnrichmentResult data)
     {
         // Update metadata on all LeetCode-sourced UserSkills
-        var leetCodeSkills = await _db.UserSkills
+        var leetCodeSkills = await db.UserSkills
             .Where(us => us.UserId == userId &&
                          us.Sources.Any(s => s.SourceType == SkillSourceType.LeetCode))
             .Include(us => us.Metadata)
@@ -270,19 +285,60 @@ public class ProfileEnrichmentService
             skill.UpdatedAt = DateTime.UtcNow;
         }
 
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync();
     }
 
     // ── GitHub projects sync ──────────────────────────────────────────────────
 
+    private static decimal ComputeProjectComplexity(GitHubRepoDto repo)
+    {
+        var score = 0m;
+
+        var text = string.Join(" ",
+            repo.Description ?? "",
+            string.Join(" ", repo.Topics ?? [])).ToLowerInvariant();
+
+        // Topics signal intentional architecture choices
+        score += (repo.Topics?.Count ?? 0) switch
+        {
+            >= 5 => 0.20m,
+            >= 2 => 0.10m,
+            _    => 0.00m
+        };
+
+        // Documented projects tend to be more serious
+        score += (repo.Description?.Length ?? 0) switch
+        {
+            > 100 => 0.15m,
+            > 40  => 0.08m,
+            _     => 0.00m
+        };
+
+        // DevOps/architecture signals
+        if (text.Contains("docker") || text.Contains("kubernetes") || text.Contains("k8s"))
+            score += 0.15m;
+
+        if (text.Contains("ci") || text.Contains("cd") || text.Contains("pipeline") || text.Contains("actions"))
+            score += 0.10m;
+
+        if (text.Contains("microservice") || text.Contains("distributed") || text.Contains("event-driven"))
+            score += 0.10m;
+
+        // Production/deployment signals
+        if (text.Contains("production") || text.Contains("deployed") || text.Contains("live"))
+            score += 0.10m;
+
+        return Math.Clamp(0.55m + score, 0.55m, 0.92m);
+    }
+    
     private async Task<int> SyncGitHubProjectsAsync(
-        Guid userId, GitHubEnrichmentResult data)
+        Guid userId, GitHubEnrichmentResult data, Guid profileId)
     {
         var added = 0;
 
         foreach (var repo in data.Repos.Where(r => !r.Fork).Take(20))
         {
-            var existing = await _db.Projects
+            var existing = await db.Projects
                 .FirstOrDefaultAsync(p =>
                     p.UserId == userId &&
                     p.RepoUrl == repo.HtmlUrl);
@@ -304,8 +360,20 @@ public class ProfileEnrichmentService
             var techStack = new List<string>();
             if (!string.IsNullOrWhiteSpace(repo.Language))
                 techStack.Add(repo.Language);
-
-            _db.Projects.Add(new Project
+            
+            var complexityBoost = ComputeProjectComplexity(repo);
+            
+            foreach (var tech in techStack)
+            {
+                var normalized = tech.ToLowerInvariant().Trim();
+                await UpsertUserSkillAsync(
+                    userId, tech, normalized,
+                    complexityBoost, SkillSourceType.GitHub,
+                    $"Built project '{repo.Name}' — {repo.StargazersCount} stars, {repo.ForksCount} forks",
+                    profileId);
+            }
+            
+            db.Projects.Add(new Project
             {
                 Id           = Guid.NewGuid(),
                 UserId       = userId,
@@ -326,12 +394,28 @@ public class ProfileEnrichmentService
             added++;
         }
 
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync();
         return added;
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────
 
+    private static readonly string[] KnownFrameworkKeywords =
+    [
+        "spring boot", "spring", "react", "next.js", "angular", "vue",
+        "django", "fastapi", "flask", "express", "nestjs", "laravel",
+        "postgresql", "mysql", "mongodb", "redis", "kafka", "rabbitmq",
+        "docker", "kubernetes", "terraform", "aws", "gcp", "azure",
+        "graphql", "rest", "grpc", "microservices", "hibernate", "j2ee",
+        "android", "flutter", "pytorch", "tensorflow", "elasticsearch"
+    ];
+
+    private static IEnumerable<string> ExtractFrameworksFromText(string text)
+    {
+        var lower = text.ToLowerInvariant();
+        return KnownFrameworkKeywords.Where(kw => lower.Contains(kw));
+    }
+    
     private async Task<bool> UpsertUserSkillAsync(
         Guid userId,
         string skillName,
@@ -342,7 +426,7 @@ public class ProfileEnrichmentService
         Guid sourceEntityId)
     {
         // Resolve or create canonical skill
-        var skill = await _db.Skills
+        var skill = await db.Skills
             .FirstOrDefaultAsync(s => s.NormalizedName == normalizedName);
 
         if (skill is null)
@@ -354,11 +438,11 @@ public class ProfileEnrichmentService
                 NormalizedName = normalizedName,
                 IsVerified     = false
             };
-            _db.Skills.Add(skill);
-            await _db.SaveChangesAsync();
+            db.Skills.Add(skill);
+            await db.SaveChangesAsync();
         }
 
-        var userSkill = await _db.UserSkills
+        var userSkill = await db.UserSkills
             .Include(us => us.Sources)
             .FirstOrDefaultAsync(us =>
                 us.UserId == userId && us.SkillId == skill.Id);
@@ -373,13 +457,13 @@ public class ProfileEnrichmentService
                 UserId             = userId,
                 SkillId            = skill.Id,
                 ConfidenceScore    = confidence,
-                VerificationStatus = confidence >= 0.80m
+                VerificationStatus = confidence >= 0.65m
                     ? SkillVerificationStatus.Evidenced
                     : SkillVerificationStatus.Claimed,
                 CreatedAt          = DateTime.UtcNow,
                 UpdatedAt          = DateTime.UtcNow
             };
-            _db.UserSkills.Add(userSkill);
+            db.UserSkills.Add(userSkill);
         }
         else
         {
@@ -394,10 +478,10 @@ public class ProfileEnrichmentService
             userSkill.UpdatedAt = DateTime.UtcNow;
         }
 
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync();
 
         // Add source record — one per source type per skill
-        var sourceExists = await _db.SkillSources
+        var sourceExists = await db.SkillSources
             .AnyAsync(s =>
                 s.UserSkillId == userSkill.Id &&
                 s.SourceType  == sourceType &&
@@ -405,7 +489,7 @@ public class ProfileEnrichmentService
 
         if (!sourceExists)
         {
-            _db.SkillSources.Add(new SkillSource
+            db.SkillSources.Add(new SkillSource
             {
                 Id             = Guid.NewGuid(),
                 UserSkillId    = userSkill.Id,
@@ -415,7 +499,7 @@ public class ProfileEnrichmentService
                 Weight         = confidence,
                 CapturedAt     = DateTime.UtcNow
             });
-            await _db.SaveChangesAsync();
+            await db.SaveChangesAsync();
         }
 
         return isNew;
@@ -424,7 +508,7 @@ public class ProfileEnrichmentService
     private async Task<ExternalProfile> GetOrCreateProfileAsync(
         Guid userId, Platform platform, string username)
     {
-        var profile = await _db.ExternalProfiles
+        var profile = await db.ExternalProfiles
             .FirstOrDefaultAsync(ep =>
                 ep.UserId == userId && ep.Platform == platform);
 
@@ -446,8 +530,8 @@ public class ProfileEnrichmentService
             SyncStatus = SyncStatus.Pending
         };
 
-        _db.ExternalProfiles.Add(profile);
-        await _db.SaveChangesAsync();
+        db.ExternalProfiles.Add(profile);
+        await db.SaveChangesAsync();
         return profile;
     }
 }

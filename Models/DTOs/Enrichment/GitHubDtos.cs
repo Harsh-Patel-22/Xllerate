@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Xllerate.Models.DTOs.Enrichment;
 
 public class GitHubProfileDto
@@ -22,6 +24,8 @@ public class GitHubRepoDto
     public string? Description { get; set; }
     public string HtmlUrl { get; set; } = "";
     public string? Language { get; set; }
+    [JsonPropertyName("topics")]
+    public List<string> Topics { get; set; } = [];
     public int StargazersCount { get; set; }
     public int ForksCount { get; set; }
     public bool Fork { get; set; }

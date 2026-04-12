@@ -212,12 +212,16 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
 
         foreach (var item in arr.EnumerateArray())
         {
+            var gradeObj  = item.TryGetProperty("grade", out var g) && g.ValueKind == JsonValueKind.Object ? g : (JsonElement?)null;
+
             result.Add(new ParsedEducation
             {
                 Institution       = GetString(item, "institution"),
                 Degree            = GetString(item, "degree"),
                 FieldOfStudy      = GetString(item, "field"),
-                Grade             = GetString(item, "grade"),
+                GradeValue        = gradeObj.HasValue ? GetString(gradeObj.Value, "value") : null,
+                GradeType         = gradeObj.HasValue ? GetString(gradeObj.Value, "type")  : null,
+
                 IsCurrentlyEnrolled = false,
                 Achievements      = [],
                 RelevantCoursework = []
