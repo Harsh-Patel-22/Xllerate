@@ -67,7 +67,8 @@ public class ParsedEducation
     public string? Institution { get; set; }
     public string? Degree { get; set; }
     public string? FieldOfStudy { get; set; }
-    public string? Grade { get; set; }
+    public string? GradeValue { get; set; }
+    public string? GradeType { get; set; }
     public int? StartYear { get; set; }
     public int? EndYear { get; set; }
     public bool IsCurrentlyEnrolled { get; set; }
