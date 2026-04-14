@@ -10,3 +10,8 @@ riderModule.iml
 /Xllerate.http
 /Migrations
 /Controllers/TestingController.cs
+node_modules/
+.next/
+dist/
+build/
+.env
