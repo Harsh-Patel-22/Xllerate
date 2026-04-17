@@ -12,6 +12,7 @@ public class JobRole
     public string? Location { get; set; }
     public bool IsRemote { get; set; }
     public bool IsActive { get; set; } = true;
+    public bool IsCustom { get; set; } = false;
     public string? SourceUrl { get; set; }
     public DateTime ScrapedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ExpiresAt { get; set; }

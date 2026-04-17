@@ -33,6 +33,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<RoleProfile> RoleProfiles => Set<RoleProfile>();
     public DbSet<RoleProfileSkill> RoleProfileSkills => Set<RoleProfileSkill>();
     public DbSet<RoleKeywordMapping> RoleKeywordMappings => Set<RoleKeywordMapping>();
+    public DbSet<SparkRoleStaging> SparkRoleStaging => Set<SparkRoleStaging>();
 
 
     // ── Auto-set UpdatedAt on every SaveChanges ───────────────────────────────
@@ -652,6 +653,17 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
              .WithMany(s => s.MarketTrends)
              .HasForeignKey(mt => mt.SkillId)
              .OnDelete(DeleteBehavior.Cascade);
+        });
+        
+        mb.Entity<SparkRoleStaging>(e =>
+        {
+         e.HasKey(s => s.Id);
+         e.Property(s => s.Id).HasDefaultValueSql("NEWID()");
+         e.Property(s => s.AggregatedWeight).HasColumnType("decimal(5,4)");
+         e.Property(s => s.FrequencyRatio).HasColumnType("decimal(5,4)");
+         e.Property(s => s.ProbabilisticScore).HasColumnType("decimal(5,4)");
+         e.Property(s => s.Confidence).HasColumnType("decimal(5,4)");
+         e.HasIndex(s => new { s.RoleKey, s.IsConsumed });
         });
     }
 }

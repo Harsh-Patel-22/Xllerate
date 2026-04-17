@@ -78,6 +78,7 @@ public class RoleBucketDiscoveryService(
                 db.RoleKeywordMappings.Add(new RoleKeywordMapping
                 {
                     Id        = Guid.NewGuid(),
+                    DisplayName = ToDisplayName(roleKey),
                     RoleKey   = roleKey,
                     Keyword   = keyword,
                     IsSeeded  = true,

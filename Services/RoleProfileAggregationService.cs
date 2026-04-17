@@ -10,6 +10,7 @@ public class RoleProfileAggregationService(
     ApplicationDbContext db,
     IConfiguration config,
     RoleBucketDiscoveryService bucketDiscovery,
+    SparkJobService sparkJobService,
     ILogger<RoleProfileAggregationService> logger) {
     private const int MinJobsRequired = 1;
     private const decimal MinFrequencyThreshold = 0.02m;
@@ -21,28 +22,115 @@ public class RoleProfileAggregationService(
 
     public async Task AggregateAsync(CancellationToken ct = default)
     {
-        logger.LogInformation("Role profile aggregation started.");
+        logger.LogInformation("Role profile aggregation started — consuming Spark staging.");
         
-        var buckets = await bucketDiscovery.ResolveBucketsAsync(ct);
+        // Trigger Spark job and wait — or call this after Spark signals completion
+        await sparkJobService.SubmitRoleAggregationJobAsync();
 
-        logger.LogInformation("Aggregating {Count} role buckets.", buckets.Count);
+        // Poll until staging has fresh unconsumed rows (max 5 min)
+        var deadline = DateTime.UtcNow.AddMinutes(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            var hasRows = await db.SparkRoleStaging
+                .AnyAsync(s => !s.IsConsumed, ct);
+            if (hasRows) break;
 
-        foreach (var (roleKey, (displayName, keywords)) in buckets)
+            await Task.Delay(5000, ct);
+        }
+
+        var stagingRows = await db.SparkRoleStaging
+            .Where(s => !s.IsConsumed)
+            .ToListAsync(ct);
+
+        if (stagingRows.Count == 0)
+        {
+            logger.LogWarning("No staging rows found after Spark job. Aggregation skipped.");
+            return;
+        }
+
+        // Group staging rows by RoleKey
+        var byRole = stagingRows.GroupBy(s => s.RoleKey);
+
+        foreach (var group in byRole)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                await AggregateRoleAsync(roleKey, displayName, [.. keywords], ct);
+                await ConsumeRoleStagingAsync(group.Key, group.ToList(), ct);
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed to aggregate role '{RoleKey}'", roleKey);
+                logger.LogError(ex, "Failed to consume staging for role '{RoleKey}'", group.Key);
             }
         }
+
+        // Mark all consumed
+        foreach (var row in stagingRows)
+        {
+            row.IsConsumed = true;
+        }
+        await db.SaveChangesAsync(ct);
 
         logger.LogInformation("Role profile aggregation complete.");
     }
 
+    private async Task ConsumeRoleStagingAsync(
+        string roleKey, List<SparkRoleStaging> rows, CancellationToken ct)
+    {
+        var first = rows.First();
+
+        // Resolve display name from RoleKeywordMappings
+        var displayName = await db.RoleKeywordMappings
+            .Where(r => r.RoleKey == roleKey)
+            .Select(r => r.RoleKey)
+            .FirstOrDefaultAsync(ct) ?? roleKey;
+
+        // Upsert RoleProfile
+        var profile = await db.RoleProfiles
+            .Include(rp => rp.Skills)
+            .FirstOrDefaultAsync(rp => rp.RoleKey == roleKey, ct);
+
+        if (profile == null)
+        {
+            profile = new RoleProfile
+            {
+                Id          = Guid.NewGuid(),
+                RoleKey     = roleKey,
+                DisplayName = displayName,
+                CreatedAt   = DateTime.UtcNow,
+            };
+            db.RoleProfiles.Add(profile);
+            await db.SaveChangesAsync(ct);
+        }
+
+        profile.JobsSampled      = first.JobsSampled;
+        profile.Confidence       = first.Confidence;
+        profile.LastAggregatedAt = DateTime.UtcNow;
+        profile.UpdatedAt        = DateTime.UtcNow;
+
+        // Replace existing skills
+        db.RoleProfileSkills.RemoveRange(profile.Skills);
+        await db.SaveChangesAsync(ct);
+
+        var newSkills = rows.Select(r => new RoleProfileSkill
+        {
+            RoleProfileId      = profile.Id,
+            SkillId            = r.SkillId,
+            AggregatedWeight   = r.AggregatedWeight,
+            FrequencyRatio     = r.FrequencyRatio,
+            ProbabilisticScore = r.ProbabilisticScore,
+            IsCore             = r.IsCore,
+        }).ToList();
+
+        db.RoleProfileSkills.AddRange(newSkills);
+        await db.SaveChangesAsync(ct);
+
+        logger.LogInformation(
+            "Role '{RoleKey}': {Count} skills upserted ({Core} core). Jobs={Jobs}, Confidence={Conf}.",
+            roleKey, newSkills.Count, newSkills.Count(s => s.IsCore),
+            first.JobsSampled, first.Confidence);
+    }
+    
     private async Task AggregateRoleAsync(
         string roleKey, string displayName, string[] keywords, CancellationToken ct)
     {
