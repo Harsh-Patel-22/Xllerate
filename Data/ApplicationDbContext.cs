@@ -591,16 +591,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
 
             e.Property(ri => ri.Id)
              .HasDefaultValueSql("NEWID()");
-
-            e.Property(ri => ri.ResourceType)
-             .HasConversion<string>()
-             .HasMaxLength(32);
-
-            e.Property(ri => ri.ResourceTitle)
-             .HasMaxLength(512);
-
-            e.Property(ri => ri.ResourceUrl)
-             .HasMaxLength(2048);
+            
 
             e.HasIndex(ri => new { ri.RoadmapId, ri.OrderIndex });
 

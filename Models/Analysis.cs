@@ -18,6 +18,7 @@ public class Analysis
 
     // Structured narrative from Gemini — read as a unit for display
     public AnalysisInsight? InsightData { get; set; }
+    public int RoadmapCount { get; set; } = 0;
 
     public User User { get; set; } = null!;
     [ForeignKey(nameof(JobRoleId))]

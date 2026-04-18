@@ -12,6 +12,7 @@ using Hangfire.SqlServer;
 using Xllerate.Infrastructure;
 using Xllerate.Services.JobScraping;
 using Xllerate.Services.JobScraping.Sources;
+using Xllerate.Services.Roadmap;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -146,6 +147,8 @@ builder.Services.AddScoped<RoleProfileAggregationService>();
 
 builder.Services.AddScoped<UserProfileService>();
 builder.Services.AddScoped<JobFeedService>();
+
+builder.Services.AddScoped<RoadmapService>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")
