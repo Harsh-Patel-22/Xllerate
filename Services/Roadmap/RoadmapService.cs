@@ -1,14 +1,16 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using MongoDB.Driver;
 using Xllerate.Data;
 using Xllerate.Enums;
 using Xllerate.Models;
 using Xllerate.Models.DTOs.Roadmap;
+using Xllerate.Models.MongoDB;
 
 namespace Xllerate.Services.Roadmap;
 
-public class RoadmapService(ApplicationDbContext db, IConfiguration config, ILogger<RoadmapService> logger)
+public class RoadmapService(ApplicationDbContext db, MongoDbContext mongo, IConfiguration config, ILogger<RoadmapService> logger)
 {
     private static readonly Dictionary<string, List<string>> RoleSeedTasks = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -69,23 +71,25 @@ public class RoadmapService(ApplicationDbContext db, IConfiguration config, ILog
         ?? throw new KeyNotFoundException("Analysis not found.");
 
     // cap check
-    if (analysis.RoadmapCount >= 3)
+    var existingCount = await mongo.Roadmaps
+        .CountDocumentsAsync(r => r.AnalysisId == req.AnalysisId);
+    
+    if (existingCount >= 3)
         throw new InvalidOperationException("LIMIT");
 
     // duplicate check — same analysisId + same timeframe
-    var duplicate = await db.Roadmaps.AnyAsync(r =>
+    var duplicate = await mongo.Roadmaps.Find(r =>
         r.AnalysisId == req.AnalysisId &&
-        r.TimeframeDays == days);
+        r.TimeframeDays == days).AnyAsync();
+    
     if (duplicate)
         throw new InvalidOperationException("CONFLICT");
 
-    // deactivate current active roadmap if any
-    var currentActive = await db.Roadmaps
-        .FirstOrDefaultAsync(r => r.UserId == userId && r.IsActive);
-    if (currentActive != null)
-        currentActive.IsActive = false;
+    // deactivate current active roadmap
+    await mongo.Roadmaps.UpdateOneAsync(
+        r => r.UserId == userId && r.IsActive,
+        Builders<RoadmapDocument>.Update.Set(r => r.IsActive, false));
 
-    var gaps = analysis.SkillGaps.OrderByDescending(g => g.Severity).ToList();
     var roleKey = analysis.JobRole?.NormalizedTitle;
     var roleDisplay = analysis.JobRole?.Title;
 
@@ -107,30 +111,12 @@ public class RoadmapService(ApplicationDbContext db, IConfiguration config, ILog
     roleDisplay ??= "your target role";
     roleKey ??= "general";
     
+    var gaps = analysis.SkillGaps.OrderByDescending(g => g.Severity).ToList();
     var gapSkillNames = gaps.Select(g => g.Skill.Name).ToList();
     var seeds = RoleSeedTasks.TryGetValue(roleKey, out var s) ? s : [];
     var allSkills = gapSkillNames.Union(seeds, StringComparer.OrdinalIgnoreCase).ToList();
 
     var geminiResult = await CallGeminiForRoadmap(allSkills, roleDisplay, days, periodLabel);
-
-    var roadmap = new Models.Roadmap
-    {
-        Id = Guid.NewGuid(),
-        UserId = userId,
-        AnalysisId = req.AnalysisId,
-        Title = $"{roleDisplay} Roadmap — {req.Timeframe}",
-        TimeframeDays = days,
-        PeriodLabel = periodLabel,
-        Status = RoadmapStatus.Active,
-        IsActive = true,
-        EstimatedTotalHours = geminiResult.Items.Sum(i => i.EstimatedHours),
-        GeneratedAt = DateTime.UtcNow
-    };
-
-    db.Roadmaps.Add(roadmap);
-
-    // increment count on analysis
-    analysis.RoadmapCount++;
 
     var skillLookup = await db.Skills
         .Where(sk => allSkills.Contains(sk.Name))
@@ -138,19 +124,22 @@ public class RoadmapService(ApplicationDbContext db, IConfiguration config, ILog
 
     var gapLookup = gaps.ToDictionary(g => g.Skill.Name, g => g, StringComparer.OrdinalIgnoreCase);
 
+    var roadmapId = Guid.NewGuid();
+    
     var items = geminiResult.Items.Select((item, idx) =>
     {
         skillLookup.TryGetValue(item.SkillName ?? "", out var skillId);
         gapLookup.TryGetValue(item.SkillName ?? "", out var gap);
 
-        return new RoadmapItem
+        return new RoadmapItemDocument
         {
             Id = Guid.NewGuid(),
-            RoadmapId = roadmap.Id,
             SkillId = skillId == Guid.Empty ? null : skillId,
             SkillGapId = gap?.Id,
-            ItemType = item.IsProject ? RoadmapItemType.ProjectSuggestion : RoadmapItemType.SkillTask,
-            ActivityType = item.IsProject ? null : Enum.TryParse<ActivityType>(item.ActivityType, true, out var at) ? at : ActivityType.Practice,
+            ItemType = item.IsProject
+                ? nameof(RoadmapItemType.ProjectSuggestion)
+                : nameof(RoadmapItemType.SkillTask),
+            ActivityType = item.IsProject ? null : item.ActivityType,
             OrderIndex = idx,
             PeriodIndex = item.PeriodIndex,
             Title = item.Title,
@@ -159,60 +148,67 @@ public class RoadmapService(ApplicationDbContext db, IConfiguration config, ILog
         };
     }).ToList();
 
-    db.RoadmapItems.AddRange(items);
-    await db.SaveChangesAsync();
+    var document = new RoadmapDocument
+    {
+        Id = roadmapId,
+        UserId = userId,
+        AnalysisId = req.AnalysisId,
+        Title = $"{roleDisplay} Roadmap — {req.Timeframe}",
+        Status = RoadmapStatus.Active.ToString(),
+        TimeframeDays = days,
+        PeriodLabel = periodLabel,
+        IsActive = true,
+        EstimatedTotalHours = geminiResult.Items.Sum(i => i.EstimatedHours),
+        GeneratedAt = DateTime.UtcNow,
+        Items = items
+    };
 
-    return ToDto(roadmap, items, skillLookup);
+    await mongo.Roadmaps.InsertOneAsync(document);
+
+    return ToDto(document);
 }
 
 public async Task<RoadmapDto?> GetActiveAsync(Guid userId)
 {
-    var roadmap = await db.Roadmaps
-        .Include(r => r.Items)
-            .ThenInclude(i => i.Skill)
-        .FirstOrDefaultAsync(r => r.UserId == userId && r.IsActive);
+    var doc = await mongo.Roadmaps
+        .Find(r => r.UserId == userId && r.IsActive)
+        .FirstOrDefaultAsync();
 
-    if (roadmap == null) return null;
-
-    var skillLookup = roadmap.Items
-        .Where(i => i.Skill != null).GroupBy(i => i.Skill!.Name, StringComparer.OrdinalIgnoreCase)
-        .ToDictionary(g => g.Key, g => g.First().Skill!.Id, StringComparer.OrdinalIgnoreCase);
-
-    return ToDto(roadmap, roadmap.Items.ToList(), skillLookup);
+    return doc == null ? null : ToDto(doc);
 }
 
-    private static RoadmapDto ToDto(Models.Roadmap roadmap, List<RoadmapItem> items, Dictionary<string, Guid> skillLookup)
+    private static RoadmapDto ToDto(RoadmapDocument doc)
     {
-        var periods = items
+        var periods = doc.Items
             .GroupBy(i => i.PeriodIndex)
             .OrderBy(g => g.Key)
             .Select(g => new RoadmapPeriodDto
             {
                 PeriodIndex = g.Key,
-                Label = $"{roadmap.PeriodLabel} {g.Key}",
+                Label = $"{doc.PeriodLabel} {g.Key}",
                 Items = g.OrderBy(i => i.OrderIndex).Select(i => new RoadmapItemDto
                 {
                     ItemId = i.Id,
-                    ItemType = i.ItemType.ToString(),
-                    ActivityType = i.ActivityType?.ToString(),
+                    ItemType = i.ItemType,
+                    ActivityType = i.ActivityType,
                     Title = i.Title,
                     Description = i.Description,
                     EstimatedHours = i.EstimatedHours,
                     OrderIndex = i.OrderIndex,
                     IsCompleted = i.IsCompleted,
-                    SkillName = i.Skill?.Name
+                    SkillName = i.SkillName
                 }).ToList()
             }).ToList();
 
         return new RoadmapDto
         {
-            RoadmapId = roadmap.Id,
-            Title = roadmap.Title,
-            Status = roadmap.Status.ToString(),
-            TimeframeDays = roadmap.TimeframeDays,
-            PeriodLabel = roadmap.PeriodLabel,
-            EstimatedTotalHours = roadmap.EstimatedTotalHours,
-            GeneratedAt = roadmap.GeneratedAt,
+            RoadmapId = doc.Id,
+            Title = doc.Title,
+            Status = doc.Status.ToString(),
+            TimeframeDays = doc.TimeframeDays,
+            PeriodLabel = doc.PeriodLabel,
+            EstimatedTotalHours = doc.EstimatedTotalHours,
+            GeneratedAt = doc.GeneratedAt,
             Periods = periods
         };
     }
@@ -250,7 +246,7 @@ public async Task<RoadmapDto?> GetActiveAsync(Guid userId)
             Skills to cover: {{string.Join(", ", skills)}}
 
             Rules:
-            - Distribute skills across {totalPeriods} {periodLabel.ToLower()}s (PeriodIndex 1 to {totalPeriods})
+            - Distribute skills across {{totalPeriods}} {{periodLabel.ToLower()}}s (PeriodIndex 1 to {{totalPeriods}})
             - Each item must have: Title, Description (2-3 sentences, actionable), SkillName (exact match from skill list or null for project), ActivityType (Read|Build|Practice|Research), PeriodIndex, EstimatedHours
             - Order by dependency (fundamentals first)
             - Last item MUST be a project suggestion (IsProject: true, SkillName: null, ActivityType: null)

@@ -34,14 +34,14 @@ public class AnalysisController(AnalysisService analysisService) : ControllerBas
         }
     }
 
-    // GET /api/analysis/jobs — all analyses for current user
+    // GET /api/analysis/jobs — all analyses for current user against jobs
     [HttpGet("jobs")]
     public async Task<IActionResult> GetAllAgainstJobs(CancellationToken ct)
     {
         var results = await analysisService.GetAllForUserAgainstJobsAsync(UserId, ct);
         return Ok(results);
     }
-    // GET /api/analysis/role — all analyses for current user
+    // GET /api/analysis/role — all analyses for current user against roles
     [HttpGet("role")]
     public async Task<IActionResult> GetAllAgainstRoles(CancellationToken ct)
     {

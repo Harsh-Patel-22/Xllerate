@@ -3,14 +3,16 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using MongoDB.Driver;
 using Xllerate.Data;
 using Xllerate.Enums;
 using Xllerate.Models;
 using Xllerate.Models.DTOs.Analysis;
+using Xllerate.Models.MongoDB;
 
 namespace Xllerate.Services;
 
-public class AnalysisService( ApplicationDbContext db, InsightService insightService,IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<AnalysisService> logger)
+public class AnalysisService( ApplicationDbContext db, InsightService insightService, MongoDbContext mongo,IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<AnalysisService> logger)
 {
     // Minimum confidence to consider a skill "matched" (not weak)
     private const decimal MatchThreshold = 0.60m;
@@ -235,51 +237,83 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             "Analysis {Id} complete. User {UserId} vs Job {JobId} → {Pct}% match, {Gaps} gaps.",
             analysis.Id, userId, jobRoleId, matchPct, gaps.Count);
 
-        return BuildResultDto(analysis, jobRole, gaps);
+        var dto = BuildResultDto(analysis, jobRole, gaps);
+        await PersistToMongoAsync(dto, "Job", userId);
+        return dto;
     }
 
     public async Task<AnalysisResultDto> GetAsync(Guid analysisId, Guid userId, CancellationToken ct = default)
     {
-        var analysis = await db.Analyses
-            .Include(a => a.JobRole).ThenInclude(j => j.Company)
-            .Include(a => a.SkillGaps).ThenInclude(g => g.Skill)
-            .FirstOrDefaultAsync(a => a.Id == analysisId && a.UserId == userId, ct)
-            ?? throw new KeyNotFoundException("Analysis not found.");
+        var doc = await mongo.Analyses
+                      .Find(a => a.AnalysisId == analysisId && a.UserId == userId)
+                      .FirstOrDefaultAsync(ct)
+                  ?? throw new KeyNotFoundException("Analysis not found.");
 
-        return BuildResultDto(analysis, analysis.JobRole, analysis.SkillGaps.ToList());
+        return ToDto(doc);
     }
 
     public async Task<List<AnalysisResultDto>> GetAllForUserAgainstJobsAsync(Guid userId, CancellationToken ct = default)
     {
-        var analyses = await db.Analyses
-            .Include(a => a.JobRole).ThenInclude(j => j.Company)
-            .Include(a => a.SkillGaps).ThenInclude(g => g.Skill)
-            .Where(a => a.UserId == userId)
-            .OrderByDescending(a => a.CreatedAt)
+        var docs = await mongo.Analyses
+            .Find(a => a.UserId == userId && a.AnalysisType == "Job")
+            .SortByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
 
-        return analyses.Select(a => BuildResultDto(a, a.JobRole, a.SkillGaps.ToList())).ToList();
+        return docs.Select(ToDto).ToList();
     }
     public async Task<List<AnalysisResultDto>> GetAllForUserAgainstRolesAsync(Guid userId, CancellationToken ct = default)
     {
-        var analyses = await db.Analyses
-            .Include(a => a.JobRole).ThenInclude(j => j.Company)
-            .Include(a => a.SkillGaps).ThenInclude(g => g.Skill)
-            .Where(a => a.UserId == userId)
-            .OrderByDescending(a => a.CreatedAt)
+        var docs = await mongo.Analyses
+            .Find(a => a.UserId == userId && a.AnalysisType == "Role")
+            .SortByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
         
-        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
-                   ?? throw new KeyNotFoundException("User not found.");
-
-        if (string.IsNullOrWhiteSpace(user.DesiredRole))
-            throw new InvalidOperationException("No desired role set. Update your profile first.");
-        var role = await db.RoleProfiles.Where(rp => rp.RoleKey == user.DesiredRole).FirstOrDefaultAsync(cancellationToken: ct);
-        return analyses.Select(a => BuildRoleProfileResultDto(a, role, a.SkillGaps.ToList())).ToList();
+        return docs.Select(ToDto).ToList();
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    private static AnalysisResultDto ToDto(AnalysisDocument doc)
+    {
+        var insight = doc.InsightData == null ? null : new AnalysisInsight
+        {
+            Summary       = doc.InsightData.Summary,
+            WhyNotHired   = doc.InsightData.WhyNotHired,
+            Strengths     = doc.InsightData.Strengths,
+            CriticalGaps  = doc.InsightData.CriticalGaps,
+            MarketContext  = doc.InsightData.MarketContext
+        };
+
+        return new AnalysisResultDto
+        {
+            AnalysisId      = doc.AnalysisId,
+            JobTitle        = doc.JobTitle,
+            CompanyName     = doc.CompanyName,
+            MatchPercentage = doc.MatchPercentage,
+            Status          = doc.Status,
+            CreatedAt       = doc.CreatedAt,
+            InsightData     = insight,
+            SoftSkillSuggestions = doc.SoftSkillSuggestions,
+            Summary = new SkillSummaryDto
+            {
+                TotalRequired = doc.Summary.TotalRequired,
+                Matched       = doc.Summary.Matched,
+                Missing       = doc.Summary.Missing,
+                Weak          = doc.Summary.Weak,
+                Unverified    = doc.Summary.Unverified
+            },
+            SkillGaps = doc.SkillGaps.Select(g => new SkillGapDto
+            {
+                SkillName      = g.SkillName,
+                GapType        = g.GapType,
+                Severity       = g.Severity,
+                UserScore      = g.UserScore,
+                RequiredScore  = g.RequiredScore,
+                Recommendation = g.Recommendation
+            }).ToList()
+        };
+    }
+    
     private static decimal ComputeUserScore(UserSkill? userSkill, decimal requiredImportance)
     {
         if (userSkill == null) return 0m;
@@ -486,6 +520,8 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         await db.SaveChangesAsync(ct);
 
         result.InsightData = insight;
+        
+        await PersistToMongoAsync(result, "Role", userId);
         return result;
     }
     
@@ -673,7 +709,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             // ── Gemini insights ───────────────────────────────────────────────────
             var insight     = await insightService.GenerateInsightsAsync(result, ct);
             result.InsightData  = insight;
-
+            await PersistToMongoAsync(result, "Posting", userId);
             return result;
         }
     
@@ -819,4 +855,66 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         }
         private static string Normalize(string name) =>
             name.ToLowerInvariant().Trim();
+        
+        private async Task PersistToMongoAsync(AnalysisResultDto dto, string analysisType, Guid userId)
+        {
+            var insight = dto.InsightData == null ? null : new AnalysisInsightDocument
+            {
+                Summary      = dto.InsightData.Summary,
+                WhyNotHired  = dto.InsightData.WhyNotHired,
+                Strengths    = dto.InsightData.Strengths,
+                CriticalGaps = dto.InsightData.CriticalGaps,
+                MarketContext = dto.InsightData.MarketContext
+            };
+
+            var doc = new AnalysisDocument
+            {
+                AnalysisId   = dto.AnalysisId,
+                UserId       = userId,
+                JobTitle     = dto.JobTitle,
+                CompanyName  = dto.CompanyName,
+                MatchPercentage = dto.MatchPercentage,
+                Status       = dto.Status,
+                AnalysisType = analysisType,
+                CreatedAt    = dto.CreatedAt,
+                InsightData  = insight,
+                SoftSkillSuggestions = dto.SoftSkillSuggestions,
+                Summary = new SkillSummaryDocument
+                {
+                    TotalRequired = dto.Summary.TotalRequired,
+                    Matched       = dto.Summary.Matched,
+                    Missing       = dto.Summary.Missing,
+                    Weak          = dto.Summary.Weak,
+                    Unverified    = dto.Summary.Unverified
+                },
+                SkillGaps = dto.SkillGaps.Select(g => new SkillGapDocument
+                {
+                    SkillName      = g.SkillName,
+                    GapType        = g.GapType,
+                    Severity       = g.Severity,
+                    UserScore      = g.UserScore,
+                    RequiredScore  = g.RequiredScore,
+                    Recommendation = g.Recommendation
+                }).ToList()
+            };
+
+            await mongo.Analyses.ReplaceOneAsync(
+                a => a.AnalysisId == dto.AnalysisId,
+                doc,
+                new ReplaceOptions { IsUpsert = true });
+        }
+        
+        private static string NormalizeUrl(string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+                // Keep scheme + host + path, drop query + fragment
+                return $"{uri.Scheme}://{uri.Host}{uri.AbsolutePath.TrimEnd('/')}".ToLowerInvariant();
+            }
+            catch
+            {
+                return url.ToLowerInvariant().TrimEnd('/');
+            }
+        }
 }

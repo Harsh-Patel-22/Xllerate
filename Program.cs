@@ -115,7 +115,7 @@ builder.Services.AddHangfire(config => config
         }));
 
 builder.Services.AddHangfireServer();
-
+builder.Services.AddSingleton<MongoDbContext>();
 
 builder.Services.AddHttpClient("gemini");
 builder.Services.AddScoped<InsightService>();
