@@ -35,6 +35,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<RoleKeywordMapping> RoleKeywordMappings => Set<RoleKeywordMapping>();
     public DbSet<SparkRoleStaging> SparkRoleStaging => Set<SparkRoleStaging>();
 
+    public DbSet<SavedJob> SavedJobs => Set<SavedJob>();
 
     // ── Auto-set UpdatedAt on every SaveChanges ───────────────────────────────
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
@@ -655,6 +656,14 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
          e.Property(s => s.ProbabilisticScore).HasColumnType("decimal(5,4)");
          e.Property(s => s.Confidence).HasColumnType("decimal(5,4)");
          e.HasIndex(s => new { s.RoleKey, s.IsConsumed });
+        });
+        
+        mb.Entity<SavedJob>(e =>
+        {
+         e.HasKey(s => s.Id);
+         e.HasIndex(s => new { s.UserId, s.JobRoleId }).IsUnique();
+         e.HasOne(s => s.User).WithMany().HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
+         e.HasOne(s => s.JobRole).WithMany().HasForeignKey(s => s.JobRoleId).OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

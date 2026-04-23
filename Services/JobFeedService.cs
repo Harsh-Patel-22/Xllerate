@@ -4,7 +4,13 @@ using Xllerate.Enums;
 using Xllerate.Models.DTOs.Jobs;
 
 namespace Xllerate.Services;
-
+public static class JobFeedFilter
+{
+    public const string All = "all";
+    public const string StrongMatch = "strong";
+    public const string Remote = "remote";
+    public const string Saved = "saved";
+}
 public class JobFeedService(ApplicationDbContext db)
 {
     private const int DefaultLimit = 10;
@@ -19,7 +25,7 @@ public class JobFeedService(ApplicationDbContext db)
     };
 
     public async Task<List<JobFeedDto>> GetFeedAsync(
-        Guid userId, int limit = DefaultLimit, CancellationToken ct = default)
+        Guid userId, int limit = DefaultLimit, string filter = "all", CancellationToken ct = default)
     {
         limit = Math.Min(limit, MaxLimit);
 
@@ -35,6 +41,24 @@ public class JobFeedService(ApplicationDbContext db)
             us => us.Skill.NormalizedName,
             us => us,
             StringComparer.OrdinalIgnoreCase);
+        
+        var savedJobIds = await db.SavedJobs
+            .Where(s => s.UserId == userId)
+            .Select(s => s.JobRoleId)
+            .ToHashSetAsync(ct);
+        
+        if (filter == JobFeedFilter.Saved)
+        {
+            var savedJobs = await db.JobRoles
+                .Include(j => j.Company)
+                .Include(j => j.RequiredSkills).ThenInclude(jrs => jrs.Skill)
+                .Where(j => savedJobIds.Contains(j.Id))
+                .ToListAsync(ct);
+
+            return savedJobs
+                .Select(j => BuildDto(j, ComputeMatchScore(j, userSkillMap), userSkillMap, savedJobIds))
+                .ToList();
+        }
 
         // Infer user's domain from their strongest skill bucket
         var domainKeywords = await InferDomainKeywordsAsync(userSkills, ct);
@@ -76,8 +100,15 @@ public class JobFeedService(ApplicationDbContext db)
             .OrderByDescending(x => x.Score)
             .Take(limit)
             .ToList();
+        
+        var filtered = filter switch
+        {
+            JobFeedFilter.StrongMatch => scored.Where(x => x.Score >= 65).ToList(),
+            JobFeedFilter.Remote      => scored.Where(x => x.Job.IsRemote).ToList(),
+            _                         => scored
+        };
 
-        return scored.Select(x => BuildDto(x.Job, x.Score, userSkillMap)).ToList();
+        return filtered.Select(x => BuildDto(x.Job, x.Score, userSkillMap, savedJobIds)).ToList();
     }
 
     // ── Domain inference ──────────────────────────────────────────────────────
@@ -150,7 +181,8 @@ public class JobFeedService(ApplicationDbContext db)
     private static JobFeedDto BuildDto(
         Models.JobRole job,
         int matchScore,
-        Dictionary<string, Models.UserSkill> userSkillMap)
+        Dictionary<string, Models.UserSkill> userSkillMap,
+        HashSet<Guid> savedJobIds)
     {
         var allJobSkills     = job.RequiredSkills.Select(jrs => jrs.Skill.Name).ToList();
         var missingSkills    = job.RequiredSkills
@@ -173,6 +205,7 @@ public class JobFeedService(ApplicationDbContext db)
             Remote         = job.IsRemote,
             Salary         = null,
             Experience     = null,
+            IsSaved        = savedJobIds.Contains(job.Id),
             Skills         = allJobSkills.Take(5).ToList(),   // cap to avoid overload
             MissingSkills  = missingSkills,
             MatchScore     = matchScore,

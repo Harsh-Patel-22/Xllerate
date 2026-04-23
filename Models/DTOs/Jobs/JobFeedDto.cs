@@ -14,6 +14,7 @@ public class JobFeedDto
     public string? Salary { get; set; }
     public string? Experience { get; set; } = null;     
     public List<string> Skills { get; set; } = [];      
+    public bool IsSaved { get; set; }
     public List<string> MissingSkills { get; set; } = []; 
     public int MatchScore { get; set; }                
     public string? ScrapedAt { get; set; }               

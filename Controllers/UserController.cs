@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Xllerate.Data;
+using Xllerate.Models;
 using Xllerate.Services;
 
 namespace Xllerate.Controllers;
@@ -24,14 +25,40 @@ public class UserController(
         return profile == null ? NotFound() : Ok(profile);
     }
 
-    // GET /api/user/feed?limit=10 — domain-matched jobs with per-user match score
+    // GET /api/user/feed?limit=10?query=remote — domain-matched jobs with per-user match score
     [HttpGet("feed")]
     public async Task<IActionResult> GetFeed(
         [FromQuery] int limit = 10,
+        [FromQuery] string filter = "all",
         CancellationToken ct = default)
     {
-        var jobs = await jobFeedService.GetFeedAsync(UserId, limit, ct);
+        var jobs = await jobFeedService.GetFeedAsync(UserId, limit, filter, ct);
         return Ok(jobs);
+    }
+    
+    [HttpPost("jobs/{jobId:guid}/save")]
+    public async Task<IActionResult> SaveJob(Guid jobId, [FromServices] ApplicationDbContext db, CancellationToken ct)
+    {
+        var exists = await db.JobRoles.AnyAsync(j => j.Id == jobId, ct);
+        if (!exists) return NotFound(new { message = "Job not found." });
+
+        var alreadySaved = await db.SavedJobs.AnyAsync(s => s.UserId == UserId && s.JobRoleId == jobId, ct);
+        if (alreadySaved) return Conflict(new { message = "Job already saved." });
+
+        db.SavedJobs.Add(new SavedJob { Id = Guid.NewGuid(), UserId = UserId, JobRoleId = jobId });
+        await db.SaveChangesAsync(ct);
+        return Ok(new { message = "Job saved." });
+    }
+
+    [HttpDelete("jobs/{jobId:guid}/save")]
+    public async Task<IActionResult> UnsaveJob(Guid jobId, [FromServices] ApplicationDbContext db, CancellationToken ct)
+    {
+        var row = await db.SavedJobs.FirstOrDefaultAsync(s => s.UserId == UserId && s.JobRoleId == jobId, ct);
+        if (row == null) return NotFound(new { message = "Job not saved." });
+
+        db.SavedJobs.Remove(row);
+        await db.SaveChangesAsync(ct);
+        return Ok(new { message = "Job unsaved." });
     }
 
     [HttpPost("role/{role}")]
