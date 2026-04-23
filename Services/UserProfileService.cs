@@ -5,7 +5,7 @@ using Xllerate.Models.DTOs.User;
 
 namespace Xllerate.Services;
 
-public class UserProfileService(ApplicationDbContext db)
+public class UserProfileService(ApplicationDbContext db, AnalysisService analysisService)
 {
     private static readonly Dictionary<SkillVerificationStatus, decimal> VerificationWeight = new()
     {
@@ -37,17 +37,10 @@ public class UserProfileService(ApplicationDbContext db)
             .Where(ep => ep.UserId == userId)
             .ToListAsync(ct);
 
-        // Latest complete analysis
-        var analysis = await db.Analyses
-            .Include(a => a.JobRole).ThenInclude(j => j.Company)
-            .Include(a => a.SkillGaps).ThenInclude(g => g.Skill)
-            .Where(a => a.UserId == userId && a.Status == AnalysisStatus.Complete)
-            .OrderByDescending(a => a.CreatedAt)
-            .FirstOrDefaultAsync(ct);
 
         var resumeDto   = resume == null ? null : BuildResumeDto(resume, userSkills, externalProfiles);
-        var analysisDto = analysis == null ? null : BuildAnalysisDto(analysis, userSkills, resume);
 
+        
             
         return new UserProfileDto
         {
@@ -57,7 +50,6 @@ public class UserProfileService(ApplicationDbContext db)
             Plan              = null,
             ProfileCompletion = ComputeProfileCompletion(resume, userSkills, externalProfiles),
             Resume            = resumeDto,
-            LatestAnalysis    = analysisDto,
         };
     }
 

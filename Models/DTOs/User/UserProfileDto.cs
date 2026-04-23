@@ -10,7 +10,6 @@ public class UserProfileDto
     public string? Plan { get; set; } = null;         
     public int ProfileCompletion { get; set; }
     public ResumeDto? Resume { get; set; }
-    public LatestAnalysisDto? LatestAnalysis { get; set; }
 }
 
 public class ResumeDto
