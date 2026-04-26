@@ -7,6 +7,7 @@ using Xllerate.Enums;
 using Xllerate.Models;
 using Xllerate.Models.DTOs.Roadmap;
 using Xllerate.Models.MongoDB;
+using Xllerate.Static;
 
 namespace Xllerate.Services.Roadmap;
 
@@ -199,7 +200,8 @@ public async Task<RoadmapDto?> GetActiveAsync(Guid userId)
                     SkillName = i.SkillName
                 }).ToList()
             }).ToList();
-
+        Random random = new Random();
+        var index = random.Next(0, Seed.Quotes.Length);
         return new RoadmapDto
         {
             RoadmapId = doc.Id,
@@ -209,7 +211,9 @@ public async Task<RoadmapDto?> GetActiveAsync(Guid userId)
             PeriodLabel = doc.PeriodLabel,
             EstimatedTotalHours = doc.EstimatedTotalHours,
             GeneratedAt = doc.GeneratedAt,
-            Periods = periods
+            Periods = periods,
+            Quote = Seed.Quotes[index],
+            Author = Seed.Authors[index]
         };
     }
 

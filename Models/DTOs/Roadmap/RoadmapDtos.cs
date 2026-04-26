@@ -16,6 +16,9 @@ public class RoadmapDto
     public int EstimatedTotalHours { get; set; }
     public DateTime GeneratedAt { get; set; }
     public List<RoadmapPeriodDto> Periods { get; set; } = [];
+
+    public string Quote { get; set; } = "";
+    public string Author { get; set; } = "";
 }
 
 public class RoadmapPeriodDto
