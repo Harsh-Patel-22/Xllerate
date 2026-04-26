@@ -6,19 +6,11 @@ using Xllerate.Models;
 
 namespace Xllerate.Services;
 
-public class JwtService
-{
-    private readonly IConfiguration _config;
-
-    public JwtService(IConfiguration config)
-    {
-        _config = config;
-    }
-
+public class JwtService(IConfiguration config) {
     public string GenerateToken(User user)
     {
-        var jwtSettings = _config.GetSection("JwtSettings");
-
+        var jwtSettings = config.GetSection("JwtSettings");
+        Random random = new Random();
         var claims = new[]
         {
             new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),

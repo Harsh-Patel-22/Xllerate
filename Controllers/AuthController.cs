@@ -9,11 +9,11 @@ namespace Xllerate.Controllers;
 
 [ApiController]
 [Route("api/{controller}")]
-public class AuthController(UserManager<User> _userManager, SignInManager<User> _signInManager, JwtService _jwtService) : ControllerBase {
+public class AuthController(UserManager<User> userManager, SignInManager<User> signInManager, JwtService jwtService) : ControllerBase {
     [HttpPost]
     [Route("register")]
     public async Task<IActionResult> RegisterHandler([FromBody] RegisterRequest request) {
-        var existingUser = await _userManager.FindByEmailAsync(request.Email);
+        var existingUser = await userManager.FindByEmailAsync(request.Email);
         if (existingUser is not null)
             return Conflict(new { message = "Email already registered." });
 
@@ -26,7 +26,7 @@ public class AuthController(UserManager<User> _userManager, SignInManager<User> 
             UpdatedAt = DateTime.UtcNow
         };
 
-        var result = await _userManager.CreateAsync(user, request.Password);
+        var result = await userManager.CreateAsync(user, request.Password);
 
         if (!result.Succeeded)
         {
@@ -35,7 +35,7 @@ public class AuthController(UserManager<User> _userManager, SignInManager<User> 
         }
 
         // Generate and return token immediately — user is logged in after register
-        var token = _jwtService.GenerateToken(user);
+        var token = jwtService.GenerateToken(user);
 
         return Ok(new AuthResponse
         {
@@ -50,12 +50,12 @@ public class AuthController(UserManager<User> _userManager, SignInManager<User> 
     [HttpPost]
     [Route("login")]
     public async Task<IActionResult> LoginHandler([FromBody] LoginRequest request) {
-        var user = await _userManager.FindByEmailAsync(request.Email);
+        var user = await userManager.FindByEmailAsync(request.Email);
         if (user is null)
             return Unauthorized(new { message = "Invalid email or password." });
 
         // CheckPasswordSignInAsync handles lockout automatically
-        var result = await _signInManager.CheckPasswordSignInAsync(
+        var result = await signInManager.CheckPasswordSignInAsync(
             user, request.Password, lockoutOnFailure: true);
 
         if (result.IsLockedOut)
@@ -67,7 +67,7 @@ public class AuthController(UserManager<User> _userManager, SignInManager<User> 
         if (!result.Succeeded)
             return Unauthorized(new { message = "Invalid email or password." });
 
-        var token = _jwtService.GenerateToken(user);
+        var token = jwtService.GenerateToken(user);
 
         return Ok(new AuthResponse
         {
@@ -86,7 +86,7 @@ public class AuthController(UserManager<User> _userManager, SignInManager<User> 
         var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
         if (userId is null) return Unauthorized();
 
-        var user = await _userManager.FindByIdAsync(userId);
+        var user = await userManager.FindByIdAsync(userId);
         if (user is null) return Unauthorized();
 
         return Ok(new AuthResponse
