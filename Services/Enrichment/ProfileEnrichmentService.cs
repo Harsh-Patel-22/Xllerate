@@ -11,6 +11,7 @@ public class ProfileEnrichmentService(
     ApplicationDbContext db,
     GitHubEnrichmentService gitHub,
     LeetCodeEnrichmentService leetCode,
+    SkillCorrelationService correlation,
     ILogger<ProfileEnrichmentService> logger) {
     // Language → normalized skill name mapping
     private static readonly Dictionary<string, string> LanguageSkillMap = new(
@@ -74,6 +75,8 @@ public class ProfileEnrichmentService(
                 "GitHub enrichment complete for user {UserId} — " +
                 "{Skills} skills, {Projects} projects",
                 userId, skillsExtracted, projectsAdded);
+            
+            await correlation.InferAndUpsertAsync(userId);
 
             return new EnrichmentSummary
             {
@@ -127,6 +130,7 @@ public class ProfileEnrichmentService(
                 "{Skills} skills extracted, {Solved} problems solved",
                 userId, skillsExtracted, data.TotalSolved);
 
+            await correlation.InferAndUpsertAsync(userId);
             return new EnrichmentSummary
             {
                 SkillsExtracted = skillsExtracted,
@@ -162,12 +166,18 @@ public class ProfileEnrichmentService(
             // Confidence based on how dominant the language is
             var totalBytes = data.AggregatedLanguages.Values.Sum();
             var ratio = totalBytes > 0 ? (double)bytes / totalBytes : 0;
-            var confidence = ratio switch
+            
+            // How many repos use this language
+            var repoCount = data.Repos.Count(r => r.Language == language);
+            var repoRatio = data.Repos.Count > 0 ? (double)repoCount / data.Repos.Count : 0;
+            
+            var confidence = (ratio, repoRatio) switch
             {
-                > 0.4  => 0.85m,   // primary language
-                > 0.2  => 0.75m,   // secondary language
-                > 0.05 => 0.65m,   // used language
-                _      => 0.55m    // minor usage
+                (> 0.40, > 0.40)  => 0.90m,   // primary language
+                (> 0.25, > 0.25)  => 0.80m,   // secondary language
+                (> 0.10, > 0.15)  => 0.70m,   // used language
+                (> 0.05, _)               => 0.60m,   // used language
+                _                              => 0.50m    // minor usage
             };
 
             var updated = await UpsertUserSkillAsync(
@@ -198,8 +208,14 @@ public class ProfileEnrichmentService(
             var normalizedName = framework.ToLowerInvariant().Trim();
 
             // More repos mentioning it = higher confidence, capped at 0.65
-            var confidence = Math.Min(0.65m, 0.35m + (0.05m * repoCount));
-
+            var confidence = repoCount switch
+            {
+                >= 5 => 0.75m,
+                >= 3 => 0.65m,
+                2    => 0.55m,
+                _    => 0.45m
+            };
+            
             var updated = await UpsertUserSkillAsync(
                 userId, framework, normalizedName,
                 confidence, SkillSourceType.GitHub,
@@ -227,10 +243,20 @@ public class ProfileEnrichmentService(
             if (!LanguageSkillMap.TryGetValue(lang, out var normalizedName))
                 normalizedName = lang.ToLower().Trim();
 
+            // Weight by how many problems solved — more problems = more confident
+            var langConfidence = data.TotalSolved switch
+            {
+                > 300 => 0.90m,
+                > 150 => 0.80m,
+                > 75  => 0.70m,
+                > 25  => 0.60m,
+                _     => 0.50m
+            };
+            
             // LeetCode usage confirms practical coding ability
             var updated = await UpsertUserSkillAsync(
                 userId, lang, normalizedName,
-                confidence: 0.80m,
+                langConfidence,
                 SkillSourceType.LeetCode,
                 $"Used to solve {data.TotalSolved} LeetCode problems",
                 profileId);
@@ -361,17 +387,17 @@ public class ProfileEnrichmentService(
             if (!string.IsNullOrWhiteSpace(repo.Language))
                 techStack.Add(repo.Language);
             
-            var complexityBoost = ComputeProjectComplexity(repo);
-            
-            foreach (var tech in techStack)
-            {
-                var normalized = tech.ToLowerInvariant().Trim();
-                await UpsertUserSkillAsync(
-                    userId, tech, normalized,
-                    complexityBoost, SkillSourceType.GitHub,
-                    $"Built project '{repo.Name}' — {repo.StargazersCount} stars, {repo.ForksCount} forks",
-                    profileId);
-            }
+            // var complexityBoost = ComputeProjectComplexity(repo);
+            //
+            // foreach (var tech in techStack)
+            // {
+            //     var normalized = tech.ToLowerInvariant().Trim();
+            //     await UpsertUserSkillAsync(
+            //         userId, tech, normalized,
+            //         complexityBoost, SkillSourceType.GitHub,
+            //         $"Built project '{repo.Name}' — {repo.StargazersCount} stars, {repo.ForksCount} forks",
+            //         profileId);
+            // }
             
             db.Projects.Add(new Project
             {

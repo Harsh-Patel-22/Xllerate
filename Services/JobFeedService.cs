@@ -18,7 +18,7 @@ public class JobFeedService(ApplicationDbContext db)
 
     private static readonly Dictionary<SkillVerificationStatus, decimal> VerificationWeight = new()
     {
-        [SkillVerificationStatus.Claimed]   = 0.50m,
+        [SkillVerificationStatus.Claimed]   = 0.40m,
         [SkillVerificationStatus.Evidenced] = 0.75m,
         [SkillVerificationStatus.Certified] = 0.90m,
         [SkillVerificationStatus.Verified]  = 1.00m,
@@ -169,8 +169,13 @@ public class JobFeedService(ApplicationDbContext db)
 
             var modifier = VerificationWeight.GetValueOrDefault(
                 us.VerificationStatus, 0.50m);
-            var userScore = Math.Min(us.ConfidenceScore * modifier, req.ImportanceWeight);
-            earned += userScore;
+            var effective = us.ConfidenceScore * modifier;
+
+            // Only count toward score if it clears minimum bar (65% of required)
+            if (effective < req.ImportanceWeight * 0.65m)
+                earned += effective * 0.5m; // partial credit for weak/unverified
+            else
+                earned += Math.Min(effective, req.ImportanceWeight);
         }
 
         return (int)Math.Round((earned / totalWeight) * 100);

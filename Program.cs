@@ -119,6 +119,7 @@ builder.Services.AddSingleton<MongoDbContext>();
 
 builder.Services.AddHttpClient("gemini");
 builder.Services.AddScoped<InsightService>();
+builder.Services.AddScoped<SkillCorrelationService>();
 
 // Register enrichment services
 builder.Services.AddScoped<GitHubEnrichmentService>();

@@ -15,7 +15,8 @@ namespace Xllerate.Services;
 public class AnalysisService( ApplicationDbContext db, InsightService insightService, MongoDbContext mongo,IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<AnalysisService> logger)
 {
     // Minimum confidence to consider a skill "matched" (not weak)
-    private const decimal MatchThreshold = 0.60m;
+    private const decimal MatchThreshold = 0.65m;
+    private const decimal UnverifiedPenalty = 0.50m;
     
     private static readonly HashSet<string> KnownTechSkills = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -335,7 +336,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         if (userSkill == null)
             return GapType.Missing;
 
-        if (userSkill.VerificationStatus == SkillVerificationStatus.Claimed && userScore < MatchThreshold)
+        if (userSkill.VerificationStatus == SkillVerificationStatus.Claimed)
             return GapType.Unverified;
 
         if (userScore < requiredScore * MatchThreshold)
@@ -344,24 +345,27 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         return null; // matched
     }
 
-    private static GapSeverity ClassifySeverity(decimal importance, GapType gapType)
-    {
-        // Missing + high importance = Critical
-        if (gapType == GapType.Missing && importance >= 0.80m) return GapSeverity.Critical;
-        if (gapType == GapType.Missing && importance >= 0.60m) return GapSeverity.Important;
-        if (gapType == GapType.Weak    && importance >= 0.75m) return GapSeverity.Critical;
-        if (gapType == GapType.Weak    && importance >= 0.55m) return GapSeverity.Important;
-        return GapSeverity.NiceToHave;
-    }
+    private static GapSeverity ClassifySeverity(decimal importance, GapType gapType) =>
+        (gapType, importance) switch {
+            (GapType.Missing, >= 0.75m) => GapSeverity.Critical,
+            (GapType.Missing, >= 0.50m) => GapSeverity.Important,
+            (GapType.Missing, _) => GapSeverity.NiceToHave,
+            (GapType.Weak, >= 0.70m) => GapSeverity.Critical,
+            (GapType.Weak, >= 0.45m) => GapSeverity.Important,
+            (GapType.Weak, _) => GapSeverity.NiceToHave,
+            (GapType.Unverified, >= 0.65m) => GapSeverity.Important,
+            (GapType.Unverified, _) => GapSeverity.NiceToHave,
+            _ => GapSeverity.NiceToHave
+        };
     
-    private static GapSeverity ClassifyPostingSeverity(decimal weight, GapType gapType)
-    {
-        if (gapType == GapType.Missing && weight >= 0.65m) return GapSeverity.Critical;
-        if (gapType == GapType.Missing && weight >= 0.40m) return GapSeverity.Important;
-        if (gapType == GapType.Weak    && weight >= 0.60m) return GapSeverity.Critical;
-        if (gapType == GapType.Weak    && weight >= 0.35m) return GapSeverity.Important;
-        return GapSeverity.NiceToHave;
-    }
+    // private static GapSeverity ClassifyPostingSeverity(decimal weight, GapType gapType)
+    // {
+    //     if (gapType == GapType.Missing && weight >= 0.65m) return GapSeverity.Critical;
+    //     if (gapType == GapType.Missing && weight >= 0.40m) return GapSeverity.Important;
+    //     if (gapType == GapType.Weak    && weight >= 0.60m) return GapSeverity.Critical;
+    //     if (gapType == GapType.Weak    && weight >= 0.35m) return GapSeverity.Important;
+    //     return GapSeverity.NiceToHave;
+    // }
 
     private static string BuildRecommendation(string skillName, GapType gapType, GapSeverity severity) =>
         (gapType, severity) switch
@@ -668,7 +672,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
                     continue;
                 }
 
-                var severity = ClassifyPostingSeverity(required.Weight, gapType.Value);
+                var severity = ClassifySeverity(required.Weight, gapType.Value);
 
                 // Not persisted — SkillId is Guid.Empty for extracted-only skills
                 var tempId = Guid.NewGuid();
