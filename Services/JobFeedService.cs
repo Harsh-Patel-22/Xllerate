@@ -6,10 +6,10 @@ using Xllerate.Models.DTOs.Jobs;
 namespace Xllerate.Services;
 public static class JobFeedFilter
 {
-    public const string All = "all";
-    public const string StrongMatch = "strong";
-    public const string Remote = "remote";
-    public const string Saved = "saved";
+    public const string All = "Explore";
+    public const string StrongMatch = "Strong Match";
+    public const string Remote = "Remote";
+    public const string Saved = "Saved";
 }
 public class JobFeedService(ApplicationDbContext db)
 {
@@ -25,7 +25,7 @@ public class JobFeedService(ApplicationDbContext db)
     };
 
     public async Task<List<JobFeedDto>> GetFeedAsync(
-        Guid userId, int limit = DefaultLimit, string filter = "all", CancellationToken ct = default)
+        Guid userId, int limit = DefaultLimit, string filter = "Explore", CancellationToken ct = default)
     {
         limit = Math.Min(limit, MaxLimit);
 
