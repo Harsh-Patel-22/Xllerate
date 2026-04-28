@@ -35,7 +35,7 @@ public class AuthController(UserManager<User> userManager, SignInManager<User> s
         }
 
         // Generate and return token immediately — user is logged in after register
-        var token = jwtService.GenerateToken(user);
+        var token = await jwtService.GenerateToken(user);
 
         return Ok(new AuthResponse
         {
@@ -67,7 +67,7 @@ public class AuthController(UserManager<User> userManager, SignInManager<User> s
         if (!result.Succeeded)
             return Unauthorized(new { message = "Invalid email or password." });
 
-        var token = jwtService.GenerateToken(user);
+        var token = await jwtService.GenerateToken(user);
 
         return Ok(new AuthResponse
         {

@@ -16,7 +16,8 @@ public class SkillCorrelationService(
     // Correlation graph: skill → list of (impliedSkill, strength)
     // Strength = multiplier applied to the source skill's confidence
     // Only direct implications — no transitive chaining (keeps it explainable)
-    private static readonly Dictionary<string, List<(string Skill, decimal Strength)>> CorrelationGraph
+    private const decimal MinInferenceConfidence = 0.40m;
+    private static readonly Dictionary<string, List<(string Skill, decimal Strength)>> StaticGraph
         = new(StringComparer.OrdinalIgnoreCase)
     {
         // ── Java Ecosystem ────────────────────────────────────────────────────
@@ -252,17 +253,58 @@ public class SkillCorrelationService(
             ("sql",     0.65m),
         ],
     };
-
-    public async Task InferAndUpsertAsync(Guid userId, CancellationToken ct = default)
+    
+    public async Task SeedStaticCorrelationsAsync(CancellationToken ct = default)
     {
-        // Load all current user skills with sources
+        var anyExists = await db.SkillCorrelations
+            .AnyAsync(c => c.Source == CorrelationSource.Static, ct);
+
+        if (anyExists) return; // already seeded
+
+        logger.LogInformation("Seeding static skill correlations...");
+
+        foreach (var (skillAName, correlations) in StaticGraph)
+        {
+            var skillA = await db.Skills
+                .FirstOrDefaultAsync(s => s.NormalizedName == skillAName.ToLowerInvariant(), ct);
+            if (skillA == null) continue;
+
+            foreach (var (skillBName, strength) in correlations)
+            {
+                var skillB = await db.Skills
+                    .FirstOrDefaultAsync(s => s.NormalizedName == skillBName.ToLowerInvariant(), ct);
+                if (skillB == null) continue;
+
+                var exists = await db.SkillCorrelations
+                    .AnyAsync(c => c.SkillAId == skillA.Id && c.SkillBId == skillB.Id
+                                && c.RoleKey == "global", ct);
+                if (exists) continue;
+
+                db.SkillCorrelations.Add(new SkillCorrelation
+                {
+                    Id          = Guid.NewGuid(),
+                    SkillAId    = skillA.Id,
+                    SkillBId    = skillB.Id,
+                    RoleKey     = "global",
+                    Strength    = strength,
+                    Source      = CorrelationSource.Static,
+                    ComputedAt  = DateTime.UtcNow
+                });
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+        logger.LogInformation("Static correlations seeded.");
+    }
+
+    public async Task InferAndUpsertAsync(Guid userId, string? roleKey = null, CancellationToken ct = default)
+    {
         var userSkills = await db.UserSkills
             .Include(us => us.Skill)
             .Include(us => us.Sources)
             .Where(us => us.UserId == userId)
             .ToListAsync(ct);
 
-        // Only infer from skills with real evidence (not already inferred)
         var evidencedSkills = userSkills
             .Where(us =>
                 us.VerificationStatus != SkillVerificationStatus.Claimed &&
@@ -278,63 +320,59 @@ public class SkillCorrelationService(
             us => us,
             StringComparer.OrdinalIgnoreCase);
 
+        // Load correlations from DB — prefer Gemini over Static, role-specific over global
+        var evidencedSkillIds = evidencedSkills.Select(us => us.SkillId).ToList();
+
+        var dbCorrelations = await db.SkillCorrelations
+            .Include(c => c.SkillB)
+            .Where(c => evidencedSkillIds.Contains(c.SkillAId) &&
+                        (c.RoleKey == "global" || c.RoleKey == roleKey))
+            .ToListAsync(ct);
+
+        // Group by (SkillAId, SkillBId) — pick Gemini over Static, role-specific over global
+        var correlationMap = dbCorrelations
+            .GroupBy(c => (c.SkillAId, c.SkillBId))
+            .Select(g => g
+                .OrderByDescending(c => c.Source == CorrelationSource.Gemini)
+                .ThenByDescending(c => c.RoleKey != "global")
+                .First())
+            .GroupBy(c => c.SkillAId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         var inferredCount = 0;
 
         foreach (var sourceSkill in evidencedSkills)
         {
-            var sourceName = sourceSkill.Skill.NormalizedName;
-
-            if (!CorrelationGraph.TryGetValue(sourceName, out var correlations))
+            if (!correlationMap.TryGetValue(sourceSkill.SkillId, out var correlations))
                 continue;
 
-            foreach (var (impliedName, strength) in correlations)
+            foreach (var correlation in correlations)
             {
-                var inferredConfidence = Math.Round(sourceSkill.ConfidenceScore * strength, 4);
+                var inferredConfidence = Math.Round(
+                    sourceSkill.ConfidenceScore * correlation.Strength, 4);
 
-                // Not worth adding very weak inferences
-                if (inferredConfidence < 0.40m) continue;
+                if (inferredConfidence < MinInferenceConfidence) continue;
 
-                var normalizedImplied = impliedName.ToLowerInvariant().Trim();
+                var normalizedImplied = correlation.SkillB.NormalizedName;
 
                 if (existingSkillMap.TryGetValue(normalizedImplied, out var existing))
                 {
-                    // Never downgrade — only upgrade
                     if (inferredConfidence <= existing.ConfidenceScore) continue;
 
                     existing.ConfidenceScore = inferredConfidence;
                     existing.UpdatedAt = DateTime.UtcNow;
 
-                    // Upgrade verification if inferred confidence is strong
                     if (inferredConfidence >= 0.70m &&
                         existing.VerificationStatus == SkillVerificationStatus.Claimed)
                         existing.VerificationStatus = SkillVerificationStatus.Evidenced;
                 }
                 else
                 {
-                    // Resolve or create skill record
-                    var skill = await db.Skills
-                        .FirstOrDefaultAsync(s => s.NormalizedName == normalizedImplied, ct);
-
-                    if (skill == null)
-                    {
-                        // Proper-case the implied name for display
-                        var displayName = ToDisplayName(impliedName);
-                        skill = new Skill
-                        {
-                            Id             = Guid.NewGuid(),
-                            Name           = displayName,
-                            NormalizedName = normalizedImplied,
-                            IsVerified     = false
-                        };
-                        db.Skills.Add(skill);
-                        await db.SaveChangesAsync(ct);
-                    }
-
                     var newUserSkill = new UserSkill
                     {
                         Id                 = Guid.NewGuid(),
                         UserId             = userId,
-                        SkillId            = skill.Id,
+                        SkillId            = correlation.SkillBId,
                         ConfidenceScore    = inferredConfidence,
                         VerificationStatus = inferredConfidence >= 0.70m
                             ? SkillVerificationStatus.Evidenced
@@ -347,15 +385,15 @@ public class SkillCorrelationService(
 
                     db.SkillSources.Add(new SkillSource
                     {
-                        Id           = Guid.NewGuid(),
-                        UserSkillId  = newUserSkill.Id,
-                        SourceType   = SkillSourceType.Inferred,
-                        Evidence     = $"Inferred from '{sourceSkill.Skill.Name}' (strength {strength:P0})",
-                        Weight       = inferredConfidence,
-                        CapturedAt   = DateTime.UtcNow
+                        Id              = Guid.NewGuid(),
+                        UserSkillId     = newUserSkill.Id,
+                        SourceType      = SkillSourceType.Inferred,
+                        SourceEntityId  = correlation.Id,
+                        Evidence        = $"Inferred from '{sourceSkill.Skill.Name}' via {correlation.Source} correlation (strength {correlation.Strength:P0})",
+                        Weight          = inferredConfidence,
+                        CapturedAt      = DateTime.UtcNow
                     });
 
-                    // Track in map so later iterations don't re-add
                     existingSkillMap[normalizedImplied] = newUserSkill;
                     inferredCount++;
                 }
@@ -363,10 +401,9 @@ public class SkillCorrelationService(
         }
 
         await db.SaveChangesAsync(ct);
-
         logger.LogInformation(
-            "Skill correlation inference complete for user {UserId} — {Count} skills inferred/upgraded.",
-            userId, inferredCount);
+            "Correlation inference complete for user {UserId}, role {RoleKey} — {Count} skills inferred.",
+            userId, roleKey ?? "global", inferredCount);
     }
 
     private static string ToDisplayName(string name) => name switch
