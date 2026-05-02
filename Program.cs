@@ -148,8 +148,9 @@ builder.Services.AddScoped<RoleProfileAggregationService>();
 
 builder.Services.AddScoped<UserProfileService>();
 builder.Services.AddScoped<JobFeedService>();
-
+builder.Services.AddScoped<CorrelationRefreshJob>();
 builder.Services.AddScoped<RoadmapService>();
+builder.Services.AddScoped<AnalysisArchiveJob>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")
@@ -160,6 +161,11 @@ var app = builder.Build();
 
 
 if (app.Environment.IsDevelopment()) {
+}
+
+using (var scope = app.Services.CreateScope())
+{
+    await AdminSeeder.SeedAsync(scope.ServiceProvider, builder.Configuration);
 }
 
 app.UseHangfireDashboard("/hangfire", new DashboardOptions

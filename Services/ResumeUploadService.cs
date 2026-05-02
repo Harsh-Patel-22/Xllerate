@@ -15,7 +15,7 @@ public class ResumeUploadService(
     private static readonly string[] AllowedExtensions = [".pdf"];
     private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10MB
 
-    public async Task<Resume> UploadAsync(Guid userId, IFormFile file)
+    public async Task<Resume> UploadAsync(Guid userId, IFormFile? file)
     {
         var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
         if (!AllowedExtensions.Contains(ext))
@@ -64,7 +64,7 @@ public class ResumeUploadService(
         return resume;
     }
 
-    private async Task WriteToHdfsAsync(string hdfsPath, IFormFile file)
+    private async Task WriteToHdfsAsync(string hdfsPath, IFormFile? file)
     {
         var client = httpFactory.CreateClient("hdfs");
         var hdfsBase = config["Hdfs:BaseUrl"]!;
@@ -90,6 +90,9 @@ public class ResumeUploadService(
 
         var datanodeUrl = initResponse.Headers.Location
             ?? throw new Exception("HDFS did not return a datanode redirect URL.");
+        
+        var rewrittenUrl = RewriteDatanodeUrl(datanodeUrl.ToString());
+
 
         // Step 2 — stream file bytes to the datanode URL
         using var stream = file.OpenReadStream();
@@ -97,12 +100,20 @@ public class ResumeUploadService(
         content.Headers.ContentType =
             new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
 
-        var uploadResponse = await redirectClient.PutAsync(datanodeUrl, content);
+        var uploadResponse = await redirectClient.PutAsync(rewrittenUrl, content);
 
         if (!uploadResponse.IsSuccessStatusCode)
         {
             var body = await uploadResponse.Content.ReadAsStringAsync();
             throw new Exception($"HDFS file upload failed: {uploadResponse.StatusCode} — {body}");
         }
+    }
+    private string RewriteDatanodeUrl(string originalUrl)
+    {
+        // Replace whatever hostname HDFS returns with localhost
+        var uri = new Uri(originalUrl);
+        return originalUrl.Replace(
+            $"{uri.Scheme}://{uri.Host}:{uri.Port}",
+            $"http://localhost:{uri.Port}");
     }
 }

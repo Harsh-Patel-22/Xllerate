@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using MongoDB.Driver;
 using Xllerate.Data;
 using Xllerate.Enums;
 using Xllerate.Models.DTOs.Jobs;
@@ -11,7 +12,7 @@ public static class JobFeedFilter
     public const string Remote = "Remote";
     public const string Saved = "Saved";
 }
-public class JobFeedService(ApplicationDbContext db)
+public class JobFeedService(ApplicationDbContext db, MongoDbContext mongo)
 {
     private const int DefaultLimit = 10;
     private const int MaxLimit = 25;
@@ -117,22 +118,20 @@ public class JobFeedService(ApplicationDbContext db)
         List<Models.UserSkill> userSkills,
         CancellationToken ct)
     {
-        // Find which RoleProfile best matches user's skillset
-        var roleProfiles = await db.RoleProfiles
-            .Include(rp => rp.Skills).ThenInclude(rps => rps.Skill)
+        var roleProfiles = await mongo.RoleProfiles
+            .Find(_ => true)
             .ToListAsync(ct);
 
         var userSkillNames = userSkills
             .Select(us => us.Skill.NormalizedName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Score each role profile by overlap with user skills
         var bestProfile = roleProfiles
             .Select(rp => new
             {
                 Profile = rp,
-                Overlap = rp.Skills.Count(rps =>
-                    userSkillNames.Contains(rps.Skill.NormalizedName))
+                Overlap = rp.Skills.Count(s =>
+                    userSkillNames.Contains(s.SkillName.ToLowerInvariant().Trim()))
             })
             .OrderByDescending(x => x.Overlap)
             .FirstOrDefault();
@@ -140,7 +139,6 @@ public class JobFeedService(ApplicationDbContext db)
         if (bestProfile == null || bestProfile.Overlap == 0)
             return [];
 
-        // Pull keywords for this role from DB mappings
         var keywords = await db.RoleKeywordMappings
             .Where(m => m.RoleKey == bestProfile.Profile.RoleKey)
             .Select(m => m.Keyword)

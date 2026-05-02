@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Xllerate.Data;
 using Xllerate.Enums;
@@ -7,7 +8,7 @@ using Xllerate.Services.Enrichment;
 
 namespace Xllerate.Services;
 
-public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProcessingService> logger, ProfileEnrichmentService enrichment, HdfsService hdfsService) {
+public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProcessingService> logger, ProfileEnrichmentService enrichment, HdfsService hdfsService, IBackgroundJobClient backgroundJobs) {
     public async Task<bool> IsCompleteAsync(Guid resumeId)
     {
         // Spark writes to staging then resume.ParsedAt gets set in ConsumeAsync
@@ -66,7 +67,7 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
             staged.Count, resumeId);
         
         // Step 4 — auto-enrich from GitHub and LeetCode if found in resume
-        await AutoEnrichFromResumeLinksAsync(resume);
+        AutoEnrichFromResumeLinksAsync(resume);
     }
     
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
                 Id = Guid.NewGuid(),
                 UserId = resume.UserId,
                 SkillId = skill.Id,
+                ResumeId = resume.Id,
                 ConfidenceScore = row.Confidence,
                 VerificationStatus = SkillVerificationStatus.Claimed,
                 CreatedAt = DateTime.UtcNow,
@@ -315,7 +317,7 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
         }
     }
         
-    private async Task AutoEnrichFromResumeLinksAsync(Resume resume)
+    private void AutoEnrichFromResumeLinksAsync(Resume resume)
     {
         if (resume.ParsedData?.Links is null)
         {
@@ -333,22 +335,11 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
         if (!string.IsNullOrWhiteSpace(githubUsername))
         {
             logger.LogInformation(
-                "Auto-enriching GitHub for user {UserId} " +
-                "with username {Username} from resume",
+                "Queueing GitHub auto-enrichment for user {UserId} with username {Username}",
                 resume.UserId, githubUsername);
-            try
-            {
-                await enrichment.EnrichFromGitHubAsync(
-                    resume.UserId, githubUsername);
-            }
-            catch (Exception ex)
-            {
-                // Log but do not fail the whole pipeline
-                logger.LogWarning(ex,
-                    "GitHub auto-enrichment failed for {Username} — " +
-                    "skipping, resume processing continues",
-                    githubUsername);
-            }
+            
+            backgroundJobs.Enqueue<ProfileEnrichmentService>(x => 
+                x.EnrichFromGitHubAsync(resume.UserId, githubUsername));
         }
         else
         {
@@ -363,27 +354,16 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
         if (!string.IsNullOrWhiteSpace(leetcodeUsername))
         {
             logger.LogInformation(
-                "Auto-enriching LeetCode for user {UserId} " +
-                "with username {Username} from resume",
+                "Queueing LeetCode auto-enrichment for user {UserId} with username {Username}",
                 resume.UserId, leetcodeUsername);
-            try
-            {
-                await enrichment.EnrichFromLeetCodeAsync(
-                    resume.UserId, leetcodeUsername);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex,
-                    "LeetCode auto-enrichment failed for {Username} — " +
-                    "skipping, resume processing continues",
-                    leetcodeUsername);
-            }
+            
+            backgroundJobs.Enqueue<ProfileEnrichmentService>(x => 
+                x.EnrichFromLeetCodeAsync(resume.UserId, leetcodeUsername));
         }
         else
         {
             logger.LogInformation(
-                "No LeetCode link found in resume {ResumeId} — " +
-                "skipping LeetCode enrichment",
+                "No LeetCode link found in resume {ResumeId} — skipping LeetCode enrichment",
                 resume.Id);
         }
     }

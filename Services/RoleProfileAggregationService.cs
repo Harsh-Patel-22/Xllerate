@@ -9,9 +9,6 @@ using Xllerate.Models.MongoDB;
 namespace Xllerate.Services;
 
 public class RoleProfileAggregationService(
-    ApplicationDbContext db,
-    IConfiguration config,
-    // RoleBucketDiscoveryService bucketDiscovery,
     MongoDbContext mongo,
     SparkJobService sparkJobService,
     ILogger<RoleProfileAggregationService> logger) {
@@ -24,12 +21,16 @@ public class RoleProfileAggregationService(
     public async Task AggregateAsync(CancellationToken ct = default) {
         logger.LogInformation("Role profile aggregation started — consuming Spark staging.");
 
+        var startTime = DateTime.UtcNow.AddSeconds(-5); // Small buffer for clock skew
+        
         // Trigger Spark job and wait — or call this after Spark signals completion
         await sparkJobService.SubmitRoleAggregationJobAsync();
 
         // Poll until staging has fresh unconsumed rows (max 5 min)
         var deadline = DateTime.UtcNow.AddMinutes(5);
-        var lastUpdatedThreshold = DateTime.UtcNow.AddMinutes(-1);
+        // Use a threshold from just before the Spark job was triggered
+        var lastUpdatedThreshold = startTime; 
+        
         while (DateTime.UtcNow < deadline) {
             ct.ThrowIfCancellationRequested();
 
@@ -52,18 +53,6 @@ public class RoleProfileAggregationService(
             return;
         }
 
-        // Sync into SQL RoleProfiles + RoleProfileSkills for AnalysisService scoring
-        foreach (var profile in profiles) {
-            ct.ThrowIfCancellationRequested();
-            try {
-                await UpsertFromMongoAsync(profile, ct);
-            }
-            catch (Exception ex) {
-                logger.LogError(ex, "Failed to upsert role profile '{RoleKey}' from MongoDB", profile.RoleKey);
-            }
-        }
-
-        await db.SaveChangesAsync(ct);
         logger.LogInformation("Role profile aggregation complete. {Count} profiles synced.", profiles.Count);
     }
 
@@ -72,49 +61,6 @@ public class RoleProfileAggregationService(
         return await mongo.RoleProfiles
             .Find(r => r.RoleKey == roleKey)
             .ToListAsync();
-    }
-
-    private async Task UpsertFromMongoAsync(RoleProfileDocument profile, CancellationToken ct)
-    {
-            var existing = await db.RoleProfiles
-                .FirstOrDefaultAsync(r => r.RoleKey == profile.RoleKey, cancellationToken: ct);
-
-            if (existing == null)
-            {
-                existing = new RoleProfile { RoleKey = profile.RoleKey };
-                db.RoleProfiles.Add(existing);
-            }
-
-            existing.DisplayName = profile.DisplayName;
-            existing.JobsSampled = profile.JobsSampled;
-            existing.LastAggregatedAt = profile.LastUpdated;
-
-            // upsert skills
-            foreach (var skill in profile.Skills)
-            {
-                if (skill.SkillId == null) continue;
-
-                var existingSkill = await db.RoleProfileSkills
-                    .FirstOrDefaultAsync(s =>
-                        s.RoleProfileId == existing.Id &&
-                        s.SkillId == skill.SkillId, cancellationToken: ct);
-
-                if (existingSkill == null)
-                {
-                    db.RoleProfileSkills.Add(new RoleProfileSkill
-                    {
-                        RoleProfileId = existing.Id,
-                        SkillId = skill.SkillId.Value,
-                        ProbabilisticScore = (decimal)skill.ProbabilisticScore,
-                        IsCore = skill.IsCore
-                    });
-                }
-                else
-                {
-                    existingSkill.ProbabilisticScore = (decimal)skill.ProbabilisticScore;
-                    existingSkill.IsCore = skill.IsCore;
-                }
-            }
     }
 
     

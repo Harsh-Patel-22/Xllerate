@@ -7,6 +7,7 @@ using Xllerate.Models;
 using Xllerate.Models.DTOs.Jobs;
 using Xllerate.Services.JobScraping;
 using Hangfire;
+using MongoDB.Driver;
 using Xllerate.Enums;
 using Xllerate.Services;
 
@@ -206,71 +207,102 @@ public class JobsController(
     
     [HttpPost("enrich-companies")]
     [Authorize]
-    public async Task<IActionResult> EnrichCompanies(
-        [FromServices] CompanyEnrichmentService enricher,
-        CancellationToken ct)
+    public IActionResult EnrichCompanies()
     {
-        await enricher.EnrichAsync(ct);
-        return Ok(new { message = "Company enrichment complete." });
+        // Enqueue as a Hangfire background job
+        var jobId = jobClient.Enqueue<CompanyEnrichmentService>(
+            enricher => enricher.EnrichAsync(CancellationToken.None));
+
+        logger.LogInformation(
+            "Company enrichment triggered — Hangfire job {JobId}", jobId);
+
+        return Accepted(new
+        {
+            message = "Company enrichment job queued.",
+            jobId
+        });
     }
     
     // POST /api/jobs/aggregate-roles — trigger aggregation manually
     [HttpPost("aggregate-roles")]
     [Authorize]
-    public async Task<IActionResult> AggregateRoles(
-        [FromServices] RoleProfileAggregationService aggregator,
-        CancellationToken ct)
+    public IActionResult AggregateRoles()
     {
-        await aggregator.AggregateAsync(ct);
-        return Ok(new { message = "Role profile aggregation complete." });
+        logger.LogInformation("AggregateRoles endpoint called. Attempting to enqueue job...");
+        
+        try 
+        {
+            // Enqueue as a Hangfire background job to prevent timeout
+            var jobId = jobClient.Enqueue<RoleProfileAggregationService>(
+                aggregator => aggregator.AggregateAsync(CancellationToken.None));
+
+            logger.LogInformation("Role profile aggregation job enqueued successfully. JobId: {JobId}", jobId);
+
+            return Accepted(new
+            {
+                message = "Role profile aggregation job queued.",
+                jobId
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to enqueue role profile aggregation job.");
+            return StatusCode(500, new { message = "Failed to queue job", error = ex.Message });
+        }
     }
 
     [HttpGet("role-profiles")]
     public async Task<IActionResult> GetRoleProfiles(
+        [FromServices] MongoDbContext mongo,
         CancellationToken ct)
     {
-        var profiles = await db.RoleProfiles
-            .Include(rp => rp.Skills)
-            .ThenInclude(rps => rps.Skill)
-            .OrderBy(rp => rp.DisplayName)
-            .Select(rp => new
-            {
-                rp.RoleKey,
-                rp.DisplayName,
-                rp.JobsSampled,
-                rp.Confidence,  
-                rp.LastAggregatedAt,
-                Skills = rp.Skills
-                    .OrderByDescending(s => s.ProbabilisticScore)
-                    .Select(s => new
-                    {
-                        s.Skill.Name,
-                        s.FrequencyRatio,
-                        s.AggregatedWeight,
-                        s.ProbabilisticScore,
-                        s.IsCore
-                    })
-            })
+        var profiles = await mongo.RoleProfiles
+            .Find(_ => true)
+            .SortBy(r => r.DisplayName)
             .ToListAsync(ct);
 
-        return Ok(profiles);
+        var result = profiles.Select(rp => new
+        {
+            rp.RoleKey,
+            rp.DisplayName,
+            rp.JobsSampled,
+            rp.Confidence,
+            LastAggregatedAt = rp.LastUpdated,
+            Skills = rp.Skills
+                .OrderByDescending(s => s.ProbabilisticScore)
+                .Select(s => new
+                {
+                    Name               = s.SkillName,
+                    s.FrequencyRatio,
+                    s.AggregatedWeight,
+                    s.ProbabilisticScore,
+                    s.IsCore
+                })
+        });
+
+        return Ok(result);
     }
     [HttpGet("role-name")]
     public async Task<IActionResult> GetRoleProfileNames(
-        CancellationToken ct)
+        [FromServices] MongoDbContext mongo,CancellationToken ct)
     {
-        var profiles = await db.RoleProfiles
-            .OrderBy(rp => rp.DisplayName)
-            .Select(rp => new
-            {
-                rp.RoleKey,
-                rp.DisplayName,
-                rp.JobsSampled,
-                rp.Confidence,
-            })
+        var profiles = await mongo.RoleProfiles
+            .Find(_ => true)
+            .SortBy(r => r.DisplayName)
             .ToListAsync(ct);
 
-        return Ok(profiles);
+        var result = profiles.Select(r => new
+        {
+            r.RoleKey,
+            DisplayName = string.IsNullOrEmpty(r.DisplayName) || r.DisplayName == r.RoleKey
+                ? System.Globalization.CultureInfo.CurrentCulture.TextInfo
+                    .ToTitleCase(r.RoleKey.Replace("_", " "))
+                : r.DisplayName,
+            r.JobsSampled,
+            r.Confidence
+        });
+
+        return Ok(result);
     }
     
     [HttpGet("role-buckets")]

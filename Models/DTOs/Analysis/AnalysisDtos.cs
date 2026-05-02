@@ -10,6 +10,7 @@ public class TriggerAnalysisRequest
 public class AnalysisResultDto
 {
     public Guid AnalysisId { get; set; }
+    public Guid? ResumeId { get; set; }
     public string JobTitle { get; set; } = string.Empty;
     public string CompanyName { get; set; } = string.Empty;
     public decimal MatchPercentage { get; set; }

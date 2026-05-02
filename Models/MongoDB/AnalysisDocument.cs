@@ -11,6 +11,9 @@ public class AnalysisDocument
 
     [BsonRepresentation(BsonType.String)]
     public Guid UserId { get; set; }
+    
+    [BsonRepresentation(BsonType.String)]
+    public Guid? ResumeId { get; set; }
 
     public string JobTitle { get; set; } = string.Empty;
     public string CompanyName { get; set; } = string.Empty;

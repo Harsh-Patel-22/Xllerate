@@ -30,12 +30,14 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     
     public DbSet<SparkSkillStaging> SparkSkillStaging => Set<SparkSkillStaging>();
 
-    public DbSet<RoleProfile> RoleProfiles => Set<RoleProfile>();
-    public DbSet<RoleProfileSkill> RoleProfileSkills => Set<RoleProfileSkill>();
+    // public DbSet<RoleProfile> RoleProfiles => Set<RoleProfile>();
+    // public DbSet<RoleProfileSkill> RoleProfileSkills => Set<RoleProfileSkill>();
     public DbSet<RoleKeywordMapping> RoleKeywordMappings => Set<RoleKeywordMapping>();
-    public DbSet<SparkRoleStaging> SparkRoleStaging => Set<SparkRoleStaging>();
-
+    // public DbSet<SparkRoleStaging> SparkRoleStaging => Set<SparkRoleStaging>();
     public DbSet<SavedJob> SavedJobs => Set<SavedJob>();
+    public DbSet<SkillCorrelation> SkillCorrelations => Set<SkillCorrelation>();
+    public DbSet<SeedJob> SeedJobs { get; set; }
+    public DbSet<ArchivedAnalysis> ArchivedAnalyses => Set<ArchivedAnalysis>();
 
     // ── Auto-set UpdatedAt on every SaveChanges ───────────────────────────────
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
@@ -205,8 +207,22 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             e.OwnsOne(us => us.Metadata, m => m.ToJson());
 
             // One user can have each skill only once
+            // Resume-scoped skills — unique per (user, skill, resume)
+            e.HasIndex(us => new { us.UserId, us.SkillId, us.ResumeId })
+             .IsUnique()
+             .HasFilter("[ResumeId] IS NOT NULL");
+
+// Global enrichment skills (GitHub/LeetCode) — unique per (user, skill) when no resume
             e.HasIndex(us => new { us.UserId, us.SkillId })
-             .IsUnique();
+             .IsUnique()
+             .HasFilter("[ResumeId] IS NULL");
+
+// FK → Resume
+            e.HasOne(us => us.Resume)
+             .WithMany()
+             .HasForeignKey(us => us.ResumeId)
+             .IsRequired(false)
+             .OnDelete(DeleteBehavior.NoAction);
 
             e.HasIndex(us => new { us.UserId, us.ConfidenceScore });
 
@@ -496,6 +512,17 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
              .HasForeignKey(a => a.JobRoleId)
              .IsRequired(false)
              .OnDelete(DeleteBehavior.Restrict);
+            
+            e.HasIndex(a => new { a.UserId, a.ResumeId, a.JobRoleId })
+             .HasFilter("[JobRoleId] IS NOT NULL AND [IsDeleted] = 0");
+
+            e.HasIndex(a => new { a.UserId, a.ResumeId, a.IsDeleted });
+
+            e.HasOne(a => a.Resume)
+             .WithMany()
+             .HasForeignKey(a => a.ResumeId)
+             .IsRequired(false)
+             .OnDelete(DeleteBehavior.NoAction);
         });
 
         // ── SkillGap ──────────────────────────────────────────────────────────
@@ -537,22 +564,6 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
              .OnDelete(DeleteBehavior.Restrict);
         });
         
-        mb.Entity<RoleProfileSkill>(e => {
-            e.HasKey(rps => new { rps.RoleProfileId, rps.SkillId });
-
-            e.Property(rps => rps.AggregatedWeight).HasColumnType("decimal(5,4)");
-            e.Property(rps => rps.FrequencyRatio).HasColumnType("decimal(5,4)");
-
-            e.HasOne(rps => rps.RoleProfile)
-             .WithMany(rp => rp.Skills)
-             .HasForeignKey(rps => rps.RoleProfileId)
-             .OnDelete(DeleteBehavior.Cascade);
-
-            e.HasOne(rps => rps.Skill)
-             .WithMany()
-             .HasForeignKey(rps => rps.SkillId)
-             .OnDelete(DeleteBehavior.Restrict);
-        });
 
         // ── Roadmap ───────────────────────────────────────────────────────────
         mb.Entity<Roadmap>(e =>
@@ -647,16 +658,16 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
              .OnDelete(DeleteBehavior.Cascade);
         });
         
-        mb.Entity<SparkRoleStaging>(e =>
-        {
-         e.HasKey(s => s.Id);
-         e.Property(s => s.Id).HasDefaultValueSql("NEWID()");
-         e.Property(s => s.AggregatedWeight).HasColumnType("decimal(5,4)");
-         e.Property(s => s.FrequencyRatio).HasColumnType("decimal(5,4)");
-         e.Property(s => s.ProbabilisticScore).HasColumnType("decimal(5,4)");
-         e.Property(s => s.Confidence).HasColumnType("decimal(5,4)");
-         e.HasIndex(s => new { s.RoleKey, s.IsConsumed });
-        });
+        // mb.Entity<SparkRoleStaging>(e =>
+        // {
+        //  e.HasKey(s => s.Id);
+        //  e.Property(s => s.Id).HasDefaultValueSql("NEWID()");
+        //  e.Property(s => s.AggregatedWeight).HasColumnType("decimal(5,4)");
+        //  e.Property(s => s.FrequencyRatio).HasColumnType("decimal(5,4)");
+        //  e.Property(s => s.ProbabilisticScore).HasColumnType("decimal(5,4)");
+        //  e.Property(s => s.Confidence).HasColumnType("decimal(5,4)");
+        //  e.HasIndex(s => new { s.RoleKey, s.IsConsumed });
+        // });
         
         mb.Entity<SavedJob>(e =>
         {
@@ -664,6 +675,24 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
          e.HasIndex(s => new { s.UserId, s.JobRoleId }).IsUnique();
          e.HasOne(s => s.User).WithMany().HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
          e.HasOne(s => s.JobRole).WithMany().HasForeignKey(s => s.JobRoleId).OnDelete(DeleteBehavior.Cascade);
+        });
+        
+        mb.Entity<SkillCorrelation>(e =>
+        {
+         e.HasKey(c => c.Id);
+         e.HasIndex(c => new { c.SkillAId, c.SkillBId, c.RoleKey }).IsUnique();
+         e.HasOne(c => c.SkillA).WithMany().HasForeignKey(c => c.SkillAId).OnDelete(DeleteBehavior.NoAction);
+         e.HasOne(c => c.SkillB).WithMany().HasForeignKey(c => c.SkillBId).OnDelete(DeleteBehavior.NoAction);
+        });
+        
+        mb.Entity<ArchivedAnalysis>(e =>
+        {
+         e.HasKey(a => a.Id);
+         e.Property(a => a.Id).HasDefaultValueSql("NEWID()");
+         e.Property(a => a.MatchPercentage).HasColumnType("decimal(5,2)");
+         e.Property(a => a.SnapshotJson).HasColumnType("nvarchar(max)");
+         e.HasIndex(a => a.OriginalAnalysisId).IsUnique();
+         e.HasIndex(a => new { a.UserId, a.ArchivedAt });
         });
     }
 }

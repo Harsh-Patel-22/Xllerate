@@ -621,46 +621,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         return result;
     }
     
-    private static AnalysisResultDto BuildRoleProfileResultDto(
-        Analysis analysis, RoleProfile roleProfile, List<SkillGap> gaps)
-    {
-        var totalRequired = roleProfile.Skills.Count;
-        var missing       = gaps.Count(g => g.GapType == GapType.Missing);
-        var weak          = gaps.Count(g => g.GapType == GapType.Weak);
-        var unverified    = gaps.Count(g => g.GapType == GapType.Unverified);
-
-        return new AnalysisResultDto()
-        {
-            AnalysisId      = analysis.Id,
-            ResumeId        = analysis.ResumeId,
-            JobTitle        = roleProfile.DisplayName,
-            CompanyName     = "Market Aggregate",
-            MatchPercentage = analysis.MatchPercentage,
-            Status          = analysis.Status.ToString(),
-            CreatedAt       = analysis.CreatedAt,
-            InsightData = analysis.InsightData,
-            SkillGaps       = gaps.OrderByDescending(g => g.Severity)
-                .ThenByDescending(g => g.RequiredScore)
-                .Select(g => new SkillGapDto
-                {
-                    SkillName      = g.Skill?.Name ?? "Unknown",
-                    GapType        = g.GapType.ToString(),
-                    Severity       = g.Severity.ToString(),
-                    UserScore      = g.UserScore,
-                    RequiredScore  = g.RequiredScore,
-                    Recommendation = g.Recommendation
-                }).ToList(),
-            Summary = new SkillSummaryDto
-            {
-                TotalRequired = totalRequired,
-                Matched       = Math.Max(0, totalRequired - gaps.Count),
-                Missing       = missing,
-                Weak          = weak,
-                Unverified    = unverified
-            }
-        };
-    }
-    
+    //
     private static readonly Dictionary<string, string[]> SkillAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["restful apis"]    = ["rest", "rest api", "restapi", "rest apis", "restful"],

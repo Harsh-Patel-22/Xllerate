@@ -77,12 +77,14 @@ public class RoleBucketDiscoveryService(
 
                 db.RoleKeywordMappings.Add(new RoleKeywordMapping
                 {
-                    Id        = Guid.NewGuid(),
-                    DisplayName = ToDisplayName(roleKey),
-                    RoleKey   = roleKey,
-                    Keyword   = keyword,
-                    IsSeeded  = true,
-                    CreatedAt = DateTime.UtcNow
+                    Id          = Guid.NewGuid(),
+                    DisplayName = SeedBuckets.TryGetValue(roleKey, out var bucket) 
+                        ? bucket.DisplayName 
+                        : ToDisplayName(roleKey),  // was ToDisplayName(roleKey) always
+                    RoleKey     = roleKey,
+                    Keyword     = keyword,
+                    IsSeeded    = true,
+                    CreatedAt   = DateTime.UtcNow
                 });
             }
         }
@@ -139,6 +141,7 @@ public class RoleBucketDiscoveryService(
                 {
                     Id            = Guid.NewGuid(),
                     RoleKey       = assignedBucket,
+                    DisplayName   = SeedBuckets.TryGetValue(assignedBucket, out var s) ? s.DisplayName : ToDisplayName(assignedBucket),
                     Keyword       = title,
                     IsSeeded      = false,
                     ObservedCount = entry.Count,
@@ -163,6 +166,7 @@ public class RoleBucketDiscoveryService(
                 {
                     Id            = Guid.NewGuid(),
                     RoleKey       = newRoleKey,
+                    DisplayName   = displayName,
                     Keyword       = title,
                     IsSeeded      = false,
                     ObservedCount = entry.Count,
@@ -180,6 +184,7 @@ public class RoleBucketDiscoveryService(
         LoadBucketsFromDbAsync(CancellationToken ct)
     {
         var mappings = await db.RoleKeywordMappings.ToListAsync(ct);
+        var modified = false;
 
         var result = new Dictionary<string, (string DisplayName, List<string> Keywords)>();
 
@@ -193,8 +198,22 @@ public class RoleBucketDiscoveryService(
                 ? seed.DisplayName
                 : ToDisplayName(roleKey.Replace("_", " "));
 
+            // Back-fill missing or technical display names in the DB
+            foreach (var mapping in group)
+            {
+                if (string.IsNullOrEmpty(mapping.DisplayName) || 
+                    mapping.DisplayName == mapping.RoleKey ||
+                    mapping.DisplayName == null)  // explicit null check
+                {
+                    mapping.DisplayName = displayName;
+                    modified = true;
+                }
+            }
+
             result[roleKey] = (displayName, keywords);
         }
+
+        if (modified) await db.SaveChangesAsync(ct);
 
         return result;
     }

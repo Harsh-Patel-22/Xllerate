@@ -8,6 +8,8 @@ public class UserSkill
     public Guid Id { get; set; }
     public Guid UserId { get; set; }
     public Guid SkillId { get; set; }
+    public Guid? ResumeId { get; set; }
+    public Resume? Resume { get; set; }
 
     // Computed by backend scoring engine — never set directly by user
     [Column(TypeName = "decimal(5,4)")]
