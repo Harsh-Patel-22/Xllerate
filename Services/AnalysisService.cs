@@ -158,9 +158,12 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
                 "This job role has no skills attached. Run scraping first.");
 
         // ── Load user skills ──────────────────────────────────────────────────
+        var activeResumeId = await GetActiveResumeIdAsync(userId, ct);
+
         var userSkills = await db.UserSkills
             .Include(us => us.Skill)
-            .Where(us => us.UserId == userId)
+            .Where(us => us.UserId == userId &&
+                         (us.ResumeId == activeResumeId || us.ResumeId == null))
             .ToListAsync(ct);
 
         // Index by normalized skill name for O(1) lookup
@@ -173,6 +176,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         var analysis = new Analysis
         {
             Id           = Guid.NewGuid(),
+            ResumeId     = activeResumeId,
             UserId       = userId,
             JobRoleId    = jobRoleId,
             Status       = AnalysisStatus.Processing,
@@ -239,7 +243,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             analysis.Id, userId, jobRoleId, matchPct, gaps.Count);
 
         var dto = BuildResultDto(analysis, jobRole, gaps);
-        await PersistToMongoAsync(dto, "Job", userId);
+        await PersistToMongoAsync(dto, "Job", userId, activeResumeId);
         return dto;
     }
 
@@ -255,21 +259,50 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
 
     public async Task<List<AnalysisResultDto>> GetAllForUserAgainstJobsAsync(Guid userId, CancellationToken ct = default)
     {
+        var activeResumeId = await GetActiveResumeIdAsync(userId, ct);
+
+        // Use SQL to get the analysis IDs scoped to the active resume
+        var analysisIds = await db.Analyses
+            .Where(a => a.UserId == userId && a.ResumeId == activeResumeId && !a.IsDeleted)
+            .Select(a => a.Id)
+            .ToListAsync(ct);
+
+        if (analysisIds.Count == 0) return [];
+
         var docs = await mongo.Analyses
-            .Find(a => a.UserId == userId && a.AnalysisType == "Job")
+            .Find(a => analysisIds.Contains(a.AnalysisId) && a.AnalysisType == "Job")
             .SortByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
 
-        return docs.Select(ToDto).ToList();
+        return docs.Select(d => {
+            var dto = ToDto(d);
+            dto.ResumeId = activeResumeId;
+            return dto;
+        }).ToList();
     }
+
     public async Task<List<AnalysisResultDto>> GetAllForUserAgainstRolesAsync(Guid userId, CancellationToken ct = default)
     {
+        var activeResumeId = await GetActiveResumeIdAsync(userId, ct);
+
+        // Use SQL to get the analysis IDs scoped to the active resume
+        var analysisIds = await db.Analyses
+            .Where(a => a.UserId == userId && a.ResumeId == activeResumeId && !a.IsDeleted)
+            .Select(a => a.Id)
+            .ToListAsync(ct);
+
+        if (analysisIds.Count == 0) return [];
+
         var docs = await mongo.Analyses
-            .Find(a => a.UserId == userId && a.AnalysisType == "Role")
+            .Find(a => analysisIds.Contains(a.AnalysisId) && a.AnalysisType == "Role")
             .SortByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
-        
-        return docs.Select(ToDto).ToList();
+
+        return docs.Select(d => {
+            var dto = ToDto(d);
+            dto.ResumeId = activeResumeId;
+            return dto;
+        }).ToList();
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -288,6 +321,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         return new AnalysisResultDto
         {
             AnalysisId      = doc.AnalysisId,
+            ResumeId        = doc.ResumeId,
             JobTitle        = doc.JobTitle,
             CompanyName     = doc.CompanyName,
             MatchPercentage = doc.MatchPercentage,
@@ -391,9 +425,10 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         var totalRequired = jobRole.RequiredSkills?.Count ?? gaps.Count;
         var fullyMatched  = totalRequired - gaps.Count;
 
-        return new AnalysisResultDto
+        return new AnalysisResultDto()
         {
             AnalysisId     = analysis.Id,
+            ResumeId       = analysis.ResumeId,
             JobTitle       = jobRole.Title,
             CompanyName    = jobRole.Company?.Name ?? "Unknown",
             MatchPercentage = analysis.MatchPercentage,
@@ -431,37 +466,59 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             throw new InvalidOperationException("No desired role set. Update your profile first.");
 
         // ── Match desired role → RoleProfile ─────────────────────────────────
-        // Try exact RoleKey match first, then DisplayName contains
-        var roleProfile = await db.RoleProfiles
-            .Include(rp => rp.Skills)
-                .ThenInclude(rps => rps.Skill)
-            .FirstOrDefaultAsync(rp =>
-                rp.RoleKey == user.DesiredRole ||
-                rp.DisplayName.Contains(user.DesiredRole), ct)
-            ?? throw new KeyNotFoundException($"No aggregated role profile found for '{user.DesiredRole}'. Run aggregation first.");
+        var roleProfileDoc = await mongo.RoleProfiles
+                                 .Find(r => r.RoleKey == user.DesiredRole)
+                                 .FirstOrDefaultAsync(ct)
+                             ?? await mongo.RoleProfiles
+                                 .Find(r => r.DisplayName.ToLower().Contains(user.DesiredRole.ToLower()))
+                                 .FirstOrDefaultAsync(ct)
+                             ?? throw new KeyNotFoundException($"No aggregated role profile found for '{user.DesiredRole}'. Run aggregation first.");
 
-        var requiredSkills = roleProfile.Skills.ToList();
-
-        if (requiredSkills.Count == 0)
+        if (roleProfileDoc.Skills.Count == 0)
             throw new InvalidOperationException("Role profile has no skills. Run aggregation first.");
-
         // ── Load user skills ──────────────────────────────────────────────────
+        var activeResumeId = await GetActiveResumeIdAsync(userId, ct);
+
         var userSkills = await db.UserSkills
             .Include(us => us.Skill)
-            .Where(us => us.UserId == userId)
+            .Where(us => us.UserId == userId &&
+                         (us.ResumeId == activeResumeId || us.ResumeId == null))
             .ToListAsync(ct);
 
         var userSkillMap = userSkills.ToDictionary(
             us => us.Skill.NormalizedName,
             us => us,
             StringComparer.OrdinalIgnoreCase);
+        
+        var existingAnalysis = await db.Analyses
+            .FirstOrDefaultAsync(a =>
+                a.UserId               == userId &&
+                a.ResumeId             == activeResumeId &&
+                a.JobRoleId            == null &&
+                a.DesiredRoleSnapshot  == user.DesiredRole &&
+                !a.IsDeleted, ct);
+
+        if (existingAnalysis != null)
+        {
+            existingAnalysis.LastAccessedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
+
+            var cached = await mongo.Analyses
+                .Find(a => a.AnalysisId == existingAnalysis.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (cached != null) return ToDto(cached);
+            // If MongoDB doc missing, fall through to re-run
+        }
 
         // ── Create Analysis record ────────────────────────────────────────────
         var analysis = new Analysis
         {
             Id           = Guid.NewGuid(),
             UserId       = userId,
+            ResumeId     = activeResumeId, 
             JobRoleId    = null,
+            DesiredRoleSnapshot  = user.DesiredRole,
             Status       = AnalysisStatus.Processing,
             ModelVersion = "v1.0",
             CreatedAt    = DateTime.UtcNow
@@ -472,34 +529,40 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         // ── Core gap computation ──────────────────────────────────────────────
         var gaps        = new List<SkillGap>();
         var matchScore  = 0m;
-        var totalWeight = requiredSkills.Sum(r => r.ProbabilisticScore);
+        var totalWeight = roleProfileDoc.Skills.Sum(r => (decimal)r.ProbabilisticScore);
 
-        foreach (var required in requiredSkills)
+        foreach (var required in roleProfileDoc.Skills)
         {
-            var skillNorm = required.Skill.NormalizedName;
+            if (required.SkillId == null) continue;
+
+            // Resolve skill name — use SkillName from doc directly
+            var skillNorm = required.SkillName.ToLowerInvariant().Trim();
             userSkillMap.TryGetValue(skillNorm, out var userSkill);
 
-            var userScore = ComputeUserScore(userSkill, required.ProbabilisticScore);
-            var gapType   = ClassifyGap(userSkill, userScore, required.ProbabilisticScore);
+            var probabilisticScore = (decimal)required.ProbabilisticScore;
+            var aggregatedWeight   = (decimal)required.AggregatedWeight;
+
+            var userScore = ComputeUserScore(userSkill, probabilisticScore);
+            var gapType   = ClassifyGap(userSkill, userScore, probabilisticScore);
 
             if (gapType == null)
             {
-                matchScore += required.ProbabilisticScore;
+                matchScore += probabilisticScore;
                 continue;
             }
 
-            var severity = ClassifySeverity(required.ProbabilisticScore, gapType.Value);
+            var severity = ClassifySeverity(probabilisticScore, gapType.Value);
 
             gaps.Add(new SkillGap
             {
                 Id             = Guid.NewGuid(),
                 AnalysisId     = analysis.Id,
-                SkillId        = required.SkillId,
+                SkillId        = required.SkillId.Value,
                 GapType        = gapType.Value,
                 Severity       = severity,
                 UserScore      = userScore,
-                RequiredScore  = required.AggregatedWeight,
-                Recommendation = BuildRecommendation(required.Skill.Name, gapType.Value, severity)
+                RequiredScore  = aggregatedWeight,
+                Recommendation = BuildRecommendation(required.SkillName, gapType.Value, severity)
             });
 
             matchScore += userScore;
@@ -517,7 +580,36 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         analysis.Status          = AnalysisStatus.Complete;
         await db.SaveChangesAsync(ct);
 
-        var result   = BuildRoleProfileResultDto(analysis, roleProfile, gaps);
+        var result = new AnalysisResultDto
+        {
+            AnalysisId      = analysis.Id,
+            JobTitle        = roleProfileDoc.DisplayName,
+            CompanyName     = "Market Aggregate",
+            MatchPercentage = matchPct,
+            Status          = analysis.Status.ToString(),
+            CreatedAt       = analysis.CreatedAt,
+            InsightData     = analysis.InsightData,
+            SkillGaps       = gaps.OrderByDescending(g => g.Severity)
+                .ThenByDescending(g => g.RequiredScore)
+                .Select(g => new SkillGapDto
+                {
+                    SkillName      = g.Skill?.Name ?? roleProfileDoc.Skills
+                        .FirstOrDefault(s => s.SkillId == g.SkillId)?.SkillName ?? "Unknown",
+                    GapType        = g.GapType.ToString(),
+                    Severity       = g.Severity.ToString(),
+                    UserScore      = g.UserScore,
+                    RequiredScore  = g.RequiredScore,
+                    Recommendation = g.Recommendation
+                }).ToList(),
+            Summary = new SkillSummaryDto
+            {
+                TotalRequired = roleProfileDoc.Skills.Count,
+                Matched       = Math.Max(0, roleProfileDoc.Skills.Count - gaps.Count),
+                Missing       = gaps.Count(g => g.GapType == GapType.Missing),
+                Weak          = gaps.Count(g => g.GapType == GapType.Weak),
+                Unverified    = gaps.Count(g => g.GapType == GapType.Unverified)
+            }
+        };
         var insight  = await insightService.GenerateInsightsAsync(result, ct);
 
         analysis.InsightData = insight;
@@ -525,7 +617,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
 
         result.InsightData = insight;
         
-        await PersistToMongoAsync(result, "Role", userId);
+        await PersistToMongoAsync(result, "Role", userId, activeResumeId);
         return result;
     }
     
@@ -537,9 +629,10 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         var weak          = gaps.Count(g => g.GapType == GapType.Weak);
         var unverified    = gaps.Count(g => g.GapType == GapType.Unverified);
 
-        return new AnalysisResultDto
+        return new AnalysisResultDto()
         {
             AnalysisId      = analysis.Id,
+            ResumeId        = analysis.ResumeId,
             JobTitle        = roleProfile.DisplayName,
             CompanyName     = "Market Aggregate",
             MatchPercentage = analysis.MatchPercentage,
@@ -641,9 +734,12 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
                 throw new InvalidOperationException("Could not extract any technical skills from the job posting.");
 
             // ── Load user skills ──────────────────────────────────────────────────
+            var activeResumeId = await GetActiveResumeIdAsync(userId, ct);
+
             var userSkills = await db.UserSkills
                 .Include(us => us.Skill)
-                .Where(us => us.UserId == userId)
+                .Where(us => us.UserId == userId &&
+                             (us.ResumeId == activeResumeId || us.ResumeId == null))
                 .ToListAsync(ct);
 
             var userSkillMap = userSkills.ToDictionary(
@@ -713,7 +809,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             // ── Gemini insights ───────────────────────────────────────────────────
             var insight     = await insightService.GenerateInsightsAsync(result, ct);
             result.InsightData  = insight;
-            await PersistToMongoAsync(result, "Posting", userId);
+            await PersistToMongoAsync(result, "Posting", userId, activeResumeId);
             return result;
         }
     
@@ -828,9 +924,10 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             var weak       = gaps.Count(g => g.GapType == GapType.Weak);
             var unverified = gaps.Count(g => g.GapType == GapType.Unverified);
 
-            return new AnalysisResultDto
+            return new AnalysisResultDto()
             {
                 AnalysisId      = analysis.Id,
+                ResumeId        = analysis.ResumeId,
                 JobTitle        = "Custom Job Posting",
                 CompanyName     = "Unknown",
                 MatchPercentage = analysis.MatchPercentage,
@@ -860,7 +957,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
         private static string Normalize(string name) =>
             name.ToLowerInvariant().Trim();
         
-        private async Task PersistToMongoAsync(AnalysisResultDto dto, string analysisType, Guid userId)
+        private async Task PersistToMongoAsync(AnalysisResultDto dto, string analysisType, Guid userId, Guid? resumeId = null)
         {
             var insight = dto.InsightData == null ? null : new AnalysisInsightDocument
             {
@@ -875,6 +972,7 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             {
                 AnalysisId   = dto.AnalysisId,
                 UserId       = userId,
+                ResumeId = resumeId,
                 JobTitle     = dto.JobTitle,
                 CompanyName  = dto.CompanyName,
                 MatchPercentage = dto.MatchPercentage,
@@ -920,5 +1018,14 @@ public class AnalysisService( ApplicationDbContext db, InsightService insightSer
             {
                 return url.ToLowerInvariant().TrimEnd('/');
             }
+        }
+        
+        private async Task<Guid?> GetActiveResumeIdAsync(Guid userId, CancellationToken ct)
+        {
+            return await db.Resumes
+                .Where(r => r.UserId == userId && r.IsActive && r.ParsedAt != null)
+                .OrderByDescending(r => r.UploadedAt)
+                .Select(r => (Guid?)r.Id)
+                .FirstOrDefaultAsync(ct);
         }
 }

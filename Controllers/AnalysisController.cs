@@ -1,6 +1,9 @@
+using System.Net;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Xllerate.Data;
 using Xllerate.Models.DTOs.Analysis;
 using Xllerate.Services;
 
@@ -81,5 +84,30 @@ public class AnalysisController(AnalysisService analysisService) : ControllerBas
         var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
         var result = await analysisService.AnalyzeAgainstPostingAsync(userId, request, ct);
         return Ok(result);
+    }
+    
+    [HttpPost("{analysisId:guid}/refresh")]
+    public async Task<IActionResult> Refresh(Guid analysisId, CancellationToken ct, [FromServices] ApplicationDbContext db)
+    {
+        var userId = GetUserId();
+        var analysis = await db.Analyses
+            .FirstOrDefaultAsync(a => a.Id == analysisId && a.UserId == userId, ct);
+
+        if (analysis == null) return NotFound();
+        if (analysis.IsDeleted) return StatusCode(410, "Gone"); // 410
+
+        var result = analysis.JobRoleId.HasValue
+            ? await analysisService.AnalyzeAsync(userId, analysis.JobRoleId.Value, ct)
+            : await analysisService.AnalyzeAgainstDesiredRoleAsync(userId, ct);
+
+        return Ok(result);
+    }
+    
+    private Guid GetUserId()
+    {
+        var claim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                    ?? User.FindFirst("sub")?.Value;
+
+        return Guid.TryParse(claim, out var id) ? id : Guid.Empty;
     }
 }

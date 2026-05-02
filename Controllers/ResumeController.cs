@@ -48,7 +48,7 @@ public class ResumeController(
     // ── POST /api/resume/upload ───────────────────────────────────────────────
     [HttpPost("upload")]
     [RequestSizeLimit(10 * 1024 * 1024)]  // 10MB
-    public async Task<IActionResult> Upload(IFormFile? file)
+    public async Task<IActionResult> Upload(IFormFile? file, [FromQuery] bool suppressProcessing = false)
     {
         var userId = GetUserId();
         if (userId == Guid.Empty)
@@ -63,8 +63,10 @@ public class ResumeController(
             var resume = await uploadService.UploadAsync(userId, file);
 
             // 2 — trigger Spark pipeline via Flask (fire and forget)
-            await sparkService.SubmitResumeParseJobAsync(
-                resume.Id, resume.StoragePath);
+            if (!suppressProcessing) {
+                await sparkService.SubmitResumeParseJobAsync(
+                    resume.Id, resume.StoragePath);
+            }
 
             return Accepted(new ResumeUploadResponse
             {
@@ -263,5 +265,29 @@ public class ResumeController(
                  ?? User.FindFirst("sub")?.Value;
 
         return Guid.TryParse(claim, out var id) ? id : Guid.Empty;
+    }
+    
+    [HttpPost("{resumeId:guid}/activate")]
+    public async Task<IActionResult> Activate(Guid resumeId, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        if (userId == Guid.Empty) return Unauthorized();
+
+        var resume = await db.Resumes
+            .FirstOrDefaultAsync(r => r.Id == resumeId && r.UserId == userId, ct);
+
+        if (resume == null) return NotFound();
+        if (resume.ParsedAt == null)
+            return BadRequest(new { message = "Resume is still processing." });
+
+        // Deactivate all others
+        await db.Resumes
+            .Where(r => r.UserId == userId && r.Id != resumeId)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.IsActive, false), ct);
+
+        resume.IsActive = true;
+        await db.SaveChangesAsync(ct);
+
+        return Ok(new { message = "Resume activated." });
     }
 }

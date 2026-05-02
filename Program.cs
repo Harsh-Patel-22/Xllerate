@@ -174,6 +174,11 @@ RecurringJob.AddOrUpdate<ScrapingOrchestrator>(
     orchestrator => orchestrator.RunAsync(CancellationToken.None),
     Cron.Daily(2));
 
+RecurringJob.AddOrUpdate<AnalysisArchiveJob>(
+    "analysis-archive",
+    job => job.RunAsync(CancellationToken.None),
+    Cron.Daily);
+
 app.UseCors();
 app.UseHttpsRedirection();
 app.UseAuthentication();
