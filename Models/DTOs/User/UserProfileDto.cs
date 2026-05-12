@@ -81,3 +81,86 @@ public class InsightDto
     public string Title { get; set; } = string.Empty;
     public string Body { get; set; } = string.Empty;
 }
+
+public class DashboardDto
+{
+    public ProfileSummaryDto Profile { get; set; } = new();
+    public GitHubMetricsDto? GitHub { get; set; }
+    public LeetCodeMetricsDto? LeetCode { get; set; }
+    public LatestAnalysisSummaryDto? LatestAnalysis { get; set; }
+    public List<TechNewsDto> News { get; set; } = [];
+    public RadarChartDto RadarChart { get; set; } = new();
+}
+
+public class ProfileSummaryDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public int ProfileCompletion { get; set; }
+    public string? DesiredRole { get; set; }
+    public string? AvatarUrl { get; set; }
+}
+
+public class GitHubMetricsDto
+{
+    public string Username { get; set; } = string.Empty;
+    public string ProfileUrl { get; set; } = string.Empty;
+    public int PublicRepos { get; set; }
+    public int TotalStars { get; set; }
+    public int TotalForks { get; set; }
+    public int Followers { get; set; }
+    public int TotalCommitsEstimate { get; set; }
+    public List<string> TopLanguages { get; set; } = [];
+    public DateTime? LastSyncedAt { get; set; }
+}
+
+public class LeetCodeMetricsDto
+{
+    public string Username { get; set; } = string.Empty;
+    public string ProfileUrl { get; set; } = string.Empty;
+    public int TotalSolved { get; set; }
+    public int EasySolved { get; set; }
+    public int MediumSolved { get; set; }
+    public int HardSolved { get; set; }
+    public int TotalQuestions { get; set; }
+    public double AcceptanceRate { get; set; }
+    public int Ranking { get; set; }
+    public List<string> LanguagesUsed { get; set; } = [];
+    public List<string> Badges { get; set; } = [];
+    public DateTime? LastSyncedAt { get; set; }
+}
+
+public class LatestAnalysisSummaryDto
+{
+    public string AnalysisId { get; set; } = string.Empty;
+    public string TargetRole { get; set; } = string.Empty;
+    public decimal MatchPercentage { get; set; }
+    public string MatchLabel { get; set; } = string.Empty;
+    public int TotalSkills { get; set; }
+    public int MatchedSkills { get; set; }
+    public int MissingSkills { get; set; }
+    public int WeakSkills { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class TechNewsDto
+{
+    public string Title { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string? Url { get; set; }
+    public string? Source { get; set; }
+    public string? PublishedAt { get; set; }
+}
+
+public class RadarChartDto
+{
+    public List<RadarAxisDto> Axes { get; set; } = [];
+}
+
+public class RadarAxisDto
+{
+    public string Category { get; set; } = string.Empty;   // "Frontend", "Backend", etc.
+    public int UserScore { get; set; }                      // 0–100
+    public int RequiredScore { get; set; }                  // 0–100 from role profile
+    public bool IsPrimary { get; set; }
+}

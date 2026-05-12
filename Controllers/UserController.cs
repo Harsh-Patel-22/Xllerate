@@ -13,7 +13,8 @@ namespace Xllerate.Controllers;
 [Authorize]
 public class UserController(
     UserProfileService profileService,
-    JobFeedService jobFeedService) : ControllerBase
+    JobFeedService jobFeedService,
+    DashboardService dashboardService) : ControllerBase
 {
     private Guid UserId => Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
@@ -74,5 +75,12 @@ public class UserController(
         var role = await db.Users.Where(user => user.Id == UserId).Select(user => user.DesiredRole).FirstOrDefaultAsync();
         if (string.IsNullOrEmpty(role)) return BadRequest(new {message = "No role selected."});
         return Ok(role);
+    }
+    
+    [HttpGet("dashboard")]
+    public async Task<IActionResult> GetDashboard(CancellationToken ct)
+    {
+        var dashboard = await dashboardService.GetDashboardAsync(UserId, ct);
+        return Ok(dashboard);
     }
 }

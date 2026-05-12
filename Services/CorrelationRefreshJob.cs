@@ -9,6 +9,7 @@ public class CorrelationRefreshJob(
     ApplicationDbContext db,
     IHttpClientFactory httpClientFactory,
     IConfiguration config,
+    SkillCategorizationService categorization,
     ILogger<CorrelationRefreshJob> logger)
 {
     private static readonly string[] RoleBuckets =
@@ -157,6 +158,9 @@ public class CorrelationRefreshJob(
             IsVerified     = false
         };
         db.Skills.Add(skill);
+        await db.SaveChangesAsync(ct);
+        
+        await categorization.CategorizeAsync(skill, ct);
         await db.SaveChangesAsync(ct);
         return skill;
     }

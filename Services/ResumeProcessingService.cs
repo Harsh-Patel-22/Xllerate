@@ -8,7 +8,7 @@ using Xllerate.Services.Enrichment;
 
 namespace Xllerate.Services;
 
-public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProcessingService> logger, ProfileEnrichmentService enrichment, HdfsService hdfsService, IBackgroundJobClient backgroundJobs) {
+public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProcessingService> logger, ProfileEnrichmentService enrichment, HdfsService hdfsService, IBackgroundJobClient backgroundJobs, SkillCategorizationService categorization) {
     public async Task<bool> IsCompleteAsync(Guid resumeId)
     {
         // Spark writes to staging then resume.ParsedAt gets set in ConsumeAsync
@@ -114,8 +114,49 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
         }
     }
 
+    private static bool IsValidSkill(string name, string normalized)
+    {
+        // Too short or too long
+        if (normalized.Length < 2 || normalized.Length > 50) return false;
+
+        // Contains sentence-like patterns
+        if (normalized.Split(' ').Length > 4) return false;
+
+        // Common verbs and filler words
+        var invalidWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "develop", "develops", "developed", "developing", "development",
+            "build", "builds", "building", "built", "create", "creates",
+            "coding", "code", "design", "designs", "implement", "implements",
+            "analyze", "analyzes", "support", "supports", "maintain",
+            "learn", "learns", "run", "runs", "take", "provide", "ensure",
+            "assist", "identify", "identifies", "execute", "executes",
+            "deliver", "delivers", "collaborate", "collaborates",
+            "communicate", "communicates", "meeting", "issues", "projects",
+            "software", "development", "service", "basic", "skills",
+            "myself", "object", "post", "shop", "science", "and", "dep",
+            "upskill", "financial", "leadership", "rest", "script"
+        };
+
+        if (invalidWords.Contains(normalized)) return false;
+
+        // Starts with conjunctions or prepositions
+        var startsWithInvalid = new[] { "and ", "or ", "in ", "on ", "with ", "for ", "to ", "the " };
+        if (startsWithInvalid.Any(p => normalized.StartsWith(p))) return false;
+
+        // Contains asterisks or special chars (artifact of PDF parsing)
+        if (name.Contains('*') || name.Contains('(') && name.Contains(')')) return false;
+
+        return true;
+    }
+    
     private async Task UpsertUserSkillAsync(Resume resume, SparkSkillStaging row)
     {
+        if (!IsValidSkill(row.SkillName, row.NormalizedName))
+        {
+            logger.LogDebug("Rejected invalid skill: {Name}", row.SkillName);
+            return;
+        }
         // Resolve or create canonical skill
         var skill = await db.Skills
             .FirstOrDefaultAsync(s => s.NormalizedName == row.NormalizedName);
@@ -130,6 +171,9 @@ public class ResumeProcessingService(ApplicationDbContext db, ILogger<ResumeProc
                 IsVerified = false
             };
             db.Skills.Add(skill);
+            await db.SaveChangesAsync();
+            
+            await categorization.CategorizeAsync(skill);
             await db.SaveChangesAsync();
         }
 

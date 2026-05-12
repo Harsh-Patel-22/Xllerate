@@ -117,9 +117,14 @@ builder.Services.AddHangfire(config => config
 builder.Services.AddHangfireServer();
 builder.Services.AddSingleton<MongoDbContext>();
 
+builder.Services.AddScoped<AdminService>();
+builder.Services.AddScoped<BenchmarkService>();
+builder.Services.AddHttpClient();
+// builder.Services.AddScoped<SeedingService>();
 builder.Services.AddHttpClient("gemini");
 builder.Services.AddScoped<InsightService>();
 builder.Services.AddScoped<SkillCorrelationService>();
+builder.Services.AddScoped<SkillCategorizationService>();
 
 // Register enrichment services
 builder.Services.AddScoped<GitHubEnrichmentService>();
@@ -151,6 +156,11 @@ builder.Services.AddScoped<JobFeedService>();
 builder.Services.AddScoped<CorrelationRefreshJob>();
 builder.Services.AddScoped<RoadmapService>();
 builder.Services.AddScoped<AnalysisArchiveJob>();
+
+builder.Services.AddMemoryCache();
+builder.Services.AddScoped<DashboardService>();
+builder.Services.AddScoped<SearchService>();
+builder.Services.AddScoped<NewsRefreshJob>();
 
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().WithOrigins(builder.Configuration
     .GetSection("AllowedOrigins")
@@ -184,6 +194,15 @@ RecurringJob.AddOrUpdate<AnalysisArchiveJob>(
     "analysis-archive",
     job => job.RunAsync(CancellationToken.None),
     Cron.Daily);
+
+RecurringJob.AddOrUpdate<NewsRefreshJob>(
+    "news-refresh",
+    job => job.RunAsync(CancellationToken.None),
+    "0 */12 * * *"); 
+
+// Trigger news refresh on server start
+BackgroundJob.Enqueue<NewsRefreshJob>(job => job.RunAsync(CancellationToken.None));
+
 
 app.UseCors();
 app.UseHttpsRedirection();

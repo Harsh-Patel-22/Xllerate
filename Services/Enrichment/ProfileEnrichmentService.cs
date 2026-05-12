@@ -12,6 +12,7 @@ public class ProfileEnrichmentService(
     GitHubEnrichmentService gitHub,
     LeetCodeEnrichmentService leetCode,
     SkillCorrelationService correlation,
+    SkillCategorizationService categorization,
     ILogger<ProfileEnrichmentService> logger) {
     // Language → normalized skill name mapping
     private static readonly Dictionary<string, string> LanguageSkillMap = new(
@@ -465,6 +466,9 @@ public class ProfileEnrichmentService(
                 IsVerified     = false
             };
             db.Skills.Add(skill);
+            await db.SaveChangesAsync();
+            
+            await categorization.CategorizeAsync(skill);
             await db.SaveChangesAsync();
         }
 

@@ -11,6 +11,7 @@ namespace Xllerate.Services;
 /// </summary>
 public class SkillCorrelationService(
     ApplicationDbContext db,
+    SkillCategorizationService categorization,
     ILogger<SkillCorrelationService> logger)
 {
     // Correlation graph: skill → list of (impliedSkill, strength)
@@ -368,6 +369,14 @@ public class SkillCorrelationService(
                 }
                 else
                 {
+                    var impliedSkill = await db.Skills
+                        .FirstOrDefaultAsync(s => s.Id == correlation.SkillBId, ct);
+
+                    if (impliedSkill != null && string.IsNullOrEmpty(impliedSkill.Category))
+                    {
+                        await categorization.CategorizeAsync(impliedSkill, ct);
+                        await db.SaveChangesAsync(ct);
+                    }
                     var newUserSkill = new UserSkill
                     {
                         Id                 = Guid.NewGuid(),
